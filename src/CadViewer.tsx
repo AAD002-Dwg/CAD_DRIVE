@@ -493,11 +493,11 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, f
           '0', 'SECTION',
           '2', 'HEADER',
           '9', '$ACADVER',
-          '1', 'AC1032',
+          '1', 'AC1014',
           '9', '$HANDSEED',
           '5', '20000',
           '9', '$DWGCODEPAGE',
-          '3', 'UTF-8',
+          '3', 'ANSI_1252',
           '9', '$INSUNITS',
           '70', '0',
           '9', '$MEASUREMENT',
@@ -511,24 +511,15 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, f
           '9', '$LTSCALE',
           '40', '1.0',
           '9', '$TEXTSTYLE',
-          '7', 'Standard',
-          '9', '$DIMSTYLE',
-          '2', 'Standard',
+          '7', 'STANDARD',
           '0', 'ENDSEC',
           '0', 'SECTION',
           '2', 'TABLES',
           '0', 'TABLE',
           '2', 'VPORT',
-          '5', '8',
-          '330', '0',
-          '100', 'AcDbSymbolTable',
           '70', '1',
           '0', 'VPORT',
-          '5', '1C',
-          '330', '8',
-          '100', 'AcDbSymbolTableRecord',
-          '100', 'AcDbViewportTableRecord',
-          '2', '*Active',
+          '2', '*ACTIVE',
           '70', '0',
           '10', '0.0',
           '20', '0.0',
@@ -541,16 +532,9 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, f
           '0', 'ENDTAB',
           '0', 'TABLE',
           '2', 'LTYPE',
-          '5', '5',
-          '330', '0',
-          '100', 'AcDbSymbolTable',
           '70', '1',
           '0', 'LTYPE',
-          '5', '14',
-          '330', '5',
-          '100', 'AcDbSymbolTableRecord',
-          '100', 'AcDbLinetypeTableRecord',
-          '2', 'Continuous',
+          '2', 'CONTINUOUS',
           '70', '0',
           '3', 'Solid line',
           '72', '65',
@@ -559,71 +543,38 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, f
           '0', 'ENDTAB',
           '0', 'TABLE',
           '2', 'LAYER',
-          '5', '2',
-          '330', '0',
-          '100', 'AcDbSymbolTable',
-          '70', '4',
+          '70', '5',
           '0', 'LAYER',
-          '5', '10',
-          '330', '2',
-          '100', 'AcDbSymbolTableRecord',
-          '100', 'AcDbLayerTableRecord',
           '2', '0',
           '70', '0',
           '62', '7',
-          '6', 'Continuous',
-          '290', '1',
-          '370', '-3',
-          '390', '0',
+          '6', 'CONTINUOUS',
           '0', 'LAYER',
-          '5', '11',
-          '330', '2',
-          '100', 'AcDbSymbolTableRecord',
-          '100', 'AcDbLayerTableRecord',
           '2', 'REV_MARCAS',
           '70', '0',
-          '62', '1',
-          '6', 'Continuous',
-          '290', '1',
-          '370', '35',
-          '390', '0',
+          '62', '1', // Red
+          '6', 'CONTINUOUS',
           '0', 'LAYER',
-          '5', '12',
-          '330', '2',
-          '100', 'AcDbSymbolTableRecord',
-          '100', 'AcDbLayerTableRecord',
           '2', 'REV_FOTOS',
           '70', '0',
-          '62', '4',
-          '6', 'Continuous',
-          '290', '1',
-          '370', '25',
-          '390', '0',
+          '62', '4', // Cyan
+          '6', 'CONTINUOUS',
           '0', 'LAYER',
-          '5', '13',
-          '330', '2',
-          '100', 'AcDbSymbolTableRecord',
-          '100', 'AcDbLayerTableRecord',
           '2', 'REV_NOTAS',
           '70', '0',
-          '62', '2',
-          '6', 'Continuous',
-          '290', '1',
-          '370', '25',
-          '390', '0',
+          '62', '2', // Yellow
+          '6', 'CONTINUOUS',
+          '0', 'LAYER',
+          '2', 'REV_MEDIDAS',
+          '70', '0',
+          '62', '3', // Green
+          '6', 'CONTINUOUS',
           '0', 'ENDTAB',
           '0', 'TABLE',
           '2', 'STYLE',
-          '5', '3',
-          '330', '0',
-          '100', 'AcDbSymbolTable',
           '70', '1',
           '0', 'STYLE',
-          '5', '15',
-          '330', '3',
-          '100', 'AcDbSymbolTableRecord',
-          '100', 'AcDbTextStyleTableRecord',
-          '2', 'Standard',
+          '2', 'STANDARD',
           '70', '0',
           '40', '0.0',
           '41', '1.0',
@@ -633,6 +584,13 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, f
           '3', 'txt',
           '4', '',
           '0', 'ENDTAB',
+          '0', 'TABLE',
+          '2', 'APPID',
+          '70', '1',
+          '0', 'APPID',
+          '2', 'ACAD',
+          '70', '0',
+          '0', 'ENDTAB',
           '0', 'ENDSEC',
           '0', 'SECTION',
           '2', 'BLOCKS',
@@ -641,28 +599,101 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, f
           '2', 'ENTITIES'
         ];
 
-        let handleCounter = 0x200;
+        // 1. Export all drawn entities in the active CAD database (Lines, Circles, Arcs, Polylines, Text)
+        try {
+          const doc = docManagerRef.current?.curDocument;
+          const db = doc?.database as any;
+          if (db?.tables?.blockTable) {
+            for (const btr of db.tables.blockTable.newIterator()) {
+              if (btr.isModelSapce || btr.isModelSpace) {
+                for (const entity of btr.newIterator()) {
+                  const entLayer = entity.layer || 'REV_MARCAS';
+                  const entColor = entity.color?.colorIndex != null ? String(entity.color.colorIndex) : '1';
 
-        // Export all Photo pins and Comment pins
+                  if (entity.dxfTypeName === 'LINE') {
+                    lines.push(
+                      '0', 'LINE',
+                      '8', entLayer,
+                      '62', entColor,
+                      '10', String(entity.startPoint?.x ?? 0),
+                      '20', String(entity.startPoint?.y ?? 0),
+                      '30', String(entity.startPoint?.z ?? 0),
+                      '11', String(entity.endPoint?.x ?? 0),
+                      '21', String(entity.endPoint?.y ?? 0),
+                      '31', String(entity.endPoint?.z ?? 0)
+                    );
+                  } else if (entity.dxfTypeName === 'CIRCLE') {
+                    lines.push(
+                      '0', 'CIRCLE',
+                      '8', entLayer,
+                      '62', entColor,
+                      '10', String(entity.center?.x ?? 0),
+                      '20', String(entity.center?.y ?? 0),
+                      '30', String(entity.center?.z ?? 0),
+                      '40', String(entity.radius ?? 1)
+                    );
+                  } else if (entity.dxfTypeName === 'ARC') {
+                    lines.push(
+                      '0', 'ARC',
+                      '8', entLayer,
+                      '62', entColor,
+                      '10', String(entity.center?.x ?? 0),
+                      '20', String(entity.center?.y ?? 0),
+                      '30', String(entity.center?.z ?? 0),
+                      '40', String(entity.radius ?? 1),
+                      '50', String((entity.startAngle ?? 0) * 180 / Math.PI),
+                      '51', String((entity.endAngle ?? Math.PI * 2) * 180 / Math.PI)
+                    );
+                  } else if (entity.dxfTypeName === 'LWPOLYLINE' || entity.dxfTypeName === 'POLYLINE') {
+                    const vertices = entity.vertices || [];
+                    lines.push(
+                      '0', 'LWPOLYLINE',
+                      '8', entLayer,
+                      '62', entColor,
+                      '90', String(vertices.length),
+                      '70', entity.isClosed ? '1' : '0'
+                    );
+                    for (const v of vertices) {
+                      lines.push('10', String(v.x ?? v.position?.x ?? 0), '20', String(v.y ?? v.position?.y ?? 0));
+                      if (v.bulge) {
+                        lines.push('42', String(v.bulge));
+                      }
+                    }
+                  } else if (entity.dxfTypeName === 'MTEXT' || entity.dxfTypeName === 'TEXT') {
+                    lines.push(
+                      '0', 'TEXT',
+                      '8', entLayer,
+                      '62', entColor,
+                      '10', String(entity.location?.x ?? entity.position?.x ?? 0),
+                      '20', String(entity.location?.y ?? entity.position?.y ?? 0),
+                      '30', String(entity.location?.z ?? entity.position?.z ?? 0),
+                      '40', String(entity.textHeight ?? entity.height ?? 2.5),
+                      '1', String(entity.text || entity.contents || ''),
+                      '7', 'STANDARD'
+                    );
+                  }
+                }
+              }
+            }
+          }
+        } catch (iterErr) {
+          console.warn('Entity iteration fallback:', iterErr);
+        }
+
+        // 2. Export all Photo Pins and Comment Notes with clear labels
         if (pins && pins.length > 0) {
           for (const pin of pins) {
             const isPhoto = pin.type === 'photo';
             const layer = isPhoto ? 'REV_FOTOS' : 'REV_NOTAS';
             const color = isPhoto ? '4' : '2';
-            const circleHandle = (handleCounter++).toString(16).toUpperCase();
-            const ptHandle = (handleCounter++).toString(16).toUpperCase();
-            const textHandle = (handleCounter++).toString(16).toUpperCase();
             const title = isPhoto ? `FOTO: ${pin.author}` : `NOTA: ${pin.author}`;
             const noteClean = (pin.note || '').replace(/[\r\n]+/g, ' ');
 
-            // Circle target icon
+            // Marker Circle
             lines.push(
               '0', 'CIRCLE',
-              '5', circleHandle,
-              '100', 'AcDbEntity',
               '8', layer,
               '62', color,
-              '100', 'AcDbCircle',
               '10', String(pin.worldX),
               '20', String(pin.worldY),
               '30', '0.0',
@@ -672,34 +703,24 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, f
             // Center Point
             lines.push(
               '0', 'POINT',
-              '5', ptHandle,
-              '100', 'AcDbEntity',
               '8', layer,
               '62', color,
-              '100', 'AcDbPoint',
               '10', String(pin.worldX),
               '20', String(pin.worldY),
               '30', '0.0'
             );
 
-            // Formatted MText Annotation
+            // Annotation Text
             lines.push(
-              '0', 'MTEXT',
-              '5', textHandle,
-              '100', 'AcDbEntity',
+              '0', 'TEXT',
               '8', layer,
               '62', color,
-              '100', 'AcDbMText',
               '10', String(pin.worldX + 4.0),
               '20', String(pin.worldY + 4.0),
               '30', '0.0',
               '40', '2.5',
-              '41', '200.0',
-              '71', '1',
-              '72', '1',
-              '1', `\\A1;{\\fArial|b1;${title}}\\P{\\fArial;${pin.timestamp}}\\P{\\fArial;${noteClean}}`,
-              '7', 'Standard',
-              '50', '0.0'
+              '1', `${title} | ${pin.timestamp} | ${noteClean}`,
+              '7', 'STANDARD'
             );
           }
         }
