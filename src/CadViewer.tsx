@@ -11,17 +11,22 @@ import { AcDbLibreDwgConverter } from '@mlightcad/libredwg-converter';
 
 export interface CadViewerRef {
   zoomExtents: () => void;
-  setTool: (tool: 'pan' | 'zoom' | 'select' | 'line' | 'circle' | 'mtext' | 'dimension') => void;
+  setTool: (tool: 'pan' | 'zoom' | 'select' | 'line' | 'circle' | 'mtext' | 'dimension' | 'photo') => void;
+  cancelCommand: () => void;
   exportDxfBuffer: () => Promise<ArrayBuffer | null>;
   getLayers: () => Array<{ name: string; color: number; visible: boolean }>;
   toggleLayer: (layerName: string) => void;
+  setAllLayersVisible: (visible: boolean) => void;
   getLayouts: () => string[];
   switchLayout: (layoutName: string) => void;
+  captureCanvas: () => string | null;
+  getCanvasElement: () => HTMLCanvasElement | null;
 }
 
 interface CadViewerProps {
   fileData: ArrayBuffer | null;
   fileName: string | null;
+  bgColor?: string;
   onLoaded?: () => void;
   onError?: (err: any) => void;
 }
@@ -46,7 +51,7 @@ function ensureDwgConverter() {
   }
 }
 
-export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, fileName, onLoaded, onError }, ref) => {
+export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, fileName, bgColor = '#111827', onLoaded, onError }, ref) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const docManagerRef = useRef<AcApDocManager | null>(null);
   const [layers, setLayers] = useState<Array<{ name: string; color: number; visible: boolean }>>([]);
@@ -189,6 +194,15 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, f
         console.error(e);
       }
     },
+    cancelCommand: () => {
+      if (!docManagerRef.current) return;
+      try {
+        // Send AutoCAD cancellation string
+        docManagerRef.current.sendStringToExecute('^C^C');
+      } catch (e) {
+        console.error('Error cancelling command:', e);
+      }
+    },
     setTool: (tool) => {
       if (!docManagerRef.current) return;
       try {
@@ -250,6 +264,20 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, f
         console.error('Error toggling layer:', e);
       }
     },
+    setAllLayersVisible: (visible: boolean) => {
+      if (!docManagerRef.current?.curDocument) return;
+      try {
+        const doc = docManagerRef.current.curDocument;
+        if (doc.layerService) {
+          layers.forEach(layer => {
+            doc.layerService.setLayerOn(layer.name, visible);
+          });
+          refreshLayers();
+        }
+      } catch (e) {
+        console.error('Error setting all layers visibility:', e);
+      }
+    },
     getLayouts: () => layouts,
     switchLayout: (layoutName: string) => {
       if (!docManagerRef.current) return;
@@ -259,11 +287,25 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, f
       } catch (e) {
         console.error('Error switching layout:', e);
       }
+    },
+    captureCanvas: () => {
+      if (!containerRef.current) return null;
+      const canvas = containerRef.current.querySelector('canvas');
+      if (!canvas) return null;
+      try {
+        return canvas.toDataURL('image/png');
+      } catch (e) {
+        console.error('Error capturing canvas:', e);
+        return null;
+      }
+    },
+    getCanvasElement: () => {
+      return containerRef.current?.querySelector('canvas') || null;
     }
   }));
 
   return (
-    <div style={{ width: '100%', height: '100%', position: 'relative' }}>
+    <div style={{ width: '100%', height: '100%', position: 'relative', backgroundColor: bgColor }}>
       <div 
         ref={containerRef} 
         className="viewer-canvas-wrapper" 
@@ -289,3 +331,4 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, f
     </div>
   );
 });
+

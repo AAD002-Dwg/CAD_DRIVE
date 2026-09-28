@@ -26,20 +26,25 @@ El parseo y renderizado de los archivos se realiza **100% en el cliente** median
 
 ## ⚡ Características Principales
 
-- 📁 **Integración con Google Drive**: Selector de archivos visual mediante **Google Picker API** y descarga/subida directa con **Google Drive REST API v3**.
+- 📱 **Diseño 100% Adaptable a Celulares y Tablets**: Interfaz táctil optimizada con barra de herramientas inferior ergonómica, menú desplegable y botones amplios.
+- 📷 **Pines de Fotos de Obra (Estilo QGIS / Fieldwire)**: Toca cualquier punto del plano para abrir la cámara de tu celular, tomar una foto in situ, agregar una nota técnica y dejar un pin interactivo persistente.
+- 💻 **Carga Local y Arrastrar/Soltar (Drag & Drop)**: Abre archivos `.dwg` y `.dxf` directamente desde tu dispositivo sin necesidad obligatoria de iniciar sesión en Google Drive.
+- 📁 **Integración Nativa con Google Drive**: Selector de archivos visual mediante **Google Picker API** y descarga/subida de revisiones con **Google Drive REST API v3**.
 - 🚀 **Renderizado DWG/DXF en el Navegador**: Visualización fluida con WebGL/Canvas gracias a `@mlightcad/cad-simple-viewer` y compilaciones WebAssembly de `LibreDWG`.
-- 🗂️ **Gestión de Capas (Layers)**: Panel lateral interactivo para encender/apagar capas en tiempo real y visualizar sus colores de trazado.
+- 🗂️ **Gestión de Capas (Layers)**: Panel lateral con buscador en tiempo real, encendido/apagado rápido de todas las capas y colores de trazado.
 - 📑 **Espacios de Trabajo (Model y Layouts)**: Pestañas para alternar entre el espacio modelo (`Model`) y las distintas presentaciones (`Layouts / Paper Space`).
-- ✏️ **Herramientas de Anotación y Dibujo**:
+- ✏️ **Herramientas de Anotación y Dibujo con Cancelación (ESC)**:
   - Pan / Desplazamiento.
   - Zoom Extents (Centrar y encuadrar plano).
   - Selección de entidades.
   - Trazado de líneas y círculos.
   - Inserción de textos multilínea (`MText`).
   - Cotas y dimensiones lineales automáticas.
-- 💾 **Exportación y Sincronización**: Guardado de modificaciones directamente en la carpeta de origen de Google Drive como archivo DXF, o descarga al almacenamiento local.
+- 💾 **Exportación y Sincronización**: Guardado de revisiones en Google Drive o descarga directa del archivo DXF anotado al celular/computadora.
+- 📸 **Captura Rápida de Imagen**: Screenshot del plano listo para compartir directamente a WhatsApp u otras apps en celular.
 - 🔗 **Enlaces Compartibles**: Soporte de parámetros en la URL (`?fileId=...&fileName=...`) para compartir planos directamente entre colegas en obra.
-- 📶 **Acceso en Red Local / Obra**: Scripts automatizados para exponer la aplicación en la red Wi-Fi local y acceder desde tablets o celulares.
+- ☁️ **Listo para Vercel / Netlify**: Configuración SPA incluida (`vercel.json`).
+
 
 ---
 
@@ -214,6 +219,27 @@ git remote add origin https://github.com/TU_USUARIO/cad-drive-viewer.git
 # 6. Subir el código a GitHub
 git push -u origin main
 ```
+
+---
+
+## ☁️ Deploy en Vercel (Paso a Paso)
+
+La aplicación está lista para desplegarse en **Vercel** de forma gratuita con soporte completo para Single Page Applications:
+
+1. **Subir el proyecto a GitHub** siguiendo la guía anterior.
+2. Ingresa a [Vercel](https://vercel.com) e inicia sesión con tu cuenta de GitHub.
+3. Haz clic en **"Add New..."** > **"Project"** e importa el repositorio `cad-drive-viewer`.
+4. En **Environment Variables**, añade las mismas variables de tu archivo `.env`:
+   - `VITE_GOOGLE_API_KEY`
+   - `VITE_GOOGLE_CLIENT_ID`
+   - `VITE_GOOGLE_PROJECT_ID`
+5. Haz clic en **Deploy**.
+6. **Habilitar el dominio de Vercel en Google Cloud**:
+   - Una vez desplegado, copia la URL asignada por Vercel (ej: `https://cad-drive-viewer.vercel.app`).
+   - Ve a [Google Cloud Console](https://console.cloud.google.com/) > `APIs y Servicios` > `Credenciales`.
+   - Edita tu **ID de cliente de OAuth 2.0**.
+   - En **Orígenes autorizados de JavaScript**, añade tu URL de Vercel (ej: `https://cad-drive-viewer.vercel.app`).
+   - Guarda los cambios. ¡Listo! Ya podrás abrir y guardar planos directamente desde la web en producción o desde cualquier celular.
 
 ---
 
