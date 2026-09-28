@@ -226,9 +226,9 @@ function buildCompliantDxf(docManager: AcApDocManager | null, pins: any[] = []):
       '0', 'TABLE', '2', 'BLOCK_RECORD', '5', H_BLOCK_RECORD_TABLE,
       '100', 'AcDbSymbolTable', '70', '2',
       '0', 'BLOCK_RECORD', '5', H_BLOCK_RECORD_MODEL, '100', 'AcDbSymbolTableRecord', '100', 'AcDbBlockTableRecord',
-      '2', '*Model_Space', '340', '0',
+      '2', '*Model_Space',
       '0', 'BLOCK_RECORD', '5', H_BLOCK_RECORD_PAPER, '100', 'AcDbSymbolTableRecord', '100', 'AcDbBlockTableRecord',
-      '2', '*Paper_Space', '340', '0',
+      '2', '*Paper_Space',
       '0', 'ENDTAB',
     );
 
@@ -279,42 +279,44 @@ function buildCompliantDxf(docManager: AcApDocManager | null, pins: any[] = []):
               const type = entity.dxfTypeName;
 
               if (type === 'LINE') {
-                pushEnt('0','LINE','8',L,'62',C,
+                pushEnt('0','LINE', '100','AcDbEntity','8',L,'100','AcDbLine','62',C,
                   '10',String(entity.startPoint?.x??0),'20',String(entity.startPoint?.y??0),'30',String(entity.startPoint?.z??0),
                   '11',String(entity.endPoint?.x??0),'21',String(entity.endPoint?.y??0),'31',String(entity.endPoint?.z??0));
               } else if (type === 'CIRCLE') {
-                pushEnt('0','CIRCLE','8',L,'62',C,
+                pushEnt('0','CIRCLE', '100','AcDbEntity','8',L,'100','AcDbCircle','62',C,
                   '10',String(entity.center?.x??0),'20',String(entity.center?.y??0),'30',String(entity.center?.z??0),
                   '40',String(entity.radius??1));
               } else if (type === 'ARC') {
-                pushEnt('0','ARC','8',L,'62',C,
+                pushEnt('0','ARC', '100','AcDbEntity','8',L,'100','AcDbCircle', '62',C,
                   '10',String(entity.center?.x??0),'20',String(entity.center?.y??0),'30',String(entity.center?.z??0),
                   '40',String(entity.radius??1),
+                  '100','AcDbArc',
                   '50',String((entity.startAngle??0)*180/Math.PI),
                   '51',String((entity.endAngle??Math.PI*2)*180/Math.PI));
               } else if (type === 'LWPOLYLINE' || type === 'POLYLINE') {
                 const verts = entity.vertices || [];
-                // push header first with handle
-                lines.push('0','LWPOLYLINE','5',nextHandle(),'8',L,'62',C,
+                lines.push('0','LWPOLYLINE','5',nextHandle(),
+                  '100','AcDbEntity','8',L,
+                  '100','AcDbPolyline','62',C,
                   '90',String(verts.length),'70',entity.isClosed?'1':'0');
                 for (const v of verts) {
                   lines.push('10',String(v.x??v.position?.x??0),'20',String(v.y??v.position?.y??0));
                   if (v.bulge!=null && v.bulge!==0) lines.push('42',String(v.bulge));
                 }
               } else if (type === 'MTEXT' || type === 'TEXT') {
-                pushEnt('0','TEXT','8',L,'62',C,
+                pushEnt('0','TEXT', '100','AcDbEntity','8',L,'100','AcDbText','62',C,
                   '10',String(entity.location?.x??entity.position?.x??0),
                   '20',String(entity.location?.y??entity.position?.y??0),
                   '30',String(entity.location?.z??entity.position?.z??0),
                   '40',String(entity.textHeight??entity.height??2.5),
                   '1',String(entity.text||entity.contents||''),'7','Standard');
               } else if (type === 'POINT') {
-                pushEnt('0','POINT','8',L,'62',C,
+                pushEnt('0','POINT', '100','AcDbEntity','8',L,'100','AcDbPoint','62',C,
                   '10',String(entity.position?.x??entity.location?.x??0),
                   '20',String(entity.position?.y??entity.location?.y??0),
                   '30',String(entity.position?.z??entity.location?.z??0));
               } else if (type === 'ELLIPSE') {
-                pushEnt('0','ELLIPSE','8',L,'62',C,
+                pushEnt('0','ELLIPSE', '100','AcDbEntity','8',L,'100','AcDbEllipse','62',C,
                   '10',String(entity.center?.x??0),'20',String(entity.center?.y??0),'30',String(entity.center?.z??0),
                   '11',String(entity.majorAxis?.x??1),'21',String(entity.majorAxis?.y??0),'31',String(entity.majorAxis?.z??0),
                   '40',String(entity.radiusRatio??0.5),
@@ -336,11 +338,11 @@ function buildCompliantDxf(docManager: AcApDocManager | null, pins: any[] = []):
       const title = isPhoto ? `FOTO: ${pin.author}` : `NOTA: ${pin.author}`;
       const noteClean = (pin.note || '').replace(/[\r\n]+/g, ' ');
 
-      pushEnt('0','CIRCLE','8',layer,'62',color,
+      pushEnt('0','CIRCLE','100','AcDbEntity','8',layer,'100','AcDbCircle','62',color,
         '10',String(pin.worldX),'20',String(pin.worldY),'30','0.0','40','3.0');
-      pushEnt('0','POINT','8',layer,'62',color,
+      pushEnt('0','POINT','100','AcDbEntity','8',layer,'100','AcDbPoint','62',color,
         '10',String(pin.worldX),'20',String(pin.worldY),'30','0.0');
-      pushEnt('0','TEXT','8',layer,'62',color,
+      pushEnt('0','TEXT','100','AcDbEntity','8',layer,'100','AcDbText','62',color,
         '10',String(pin.worldX+4.0),'20',String(pin.worldY+4.0),'30','0.0',
         '40','2.5','1',`${title} | ${pin.timestamp} | ${noteClean}`,'7','Standard');
     }
