@@ -429,7 +429,7 @@ export default function App() {
     setLoadingMsg('Exportando marcas y entidades en formato DXF...');
 
     try {
-      const dxfBuffer = await cadRef.current.exportDxfBuffer();
+      const dxfBuffer = await cadRef.current.exportDxfBuffer(pins);
       if (!dxfBuffer) {
         showToast('No se pudo generar el archivo DXF. Asegúrate de tener el plano abierto.');
         setIsLoading(false);
@@ -465,7 +465,7 @@ export default function App() {
     setLoadingMsg('Generando archivo DXF completo para descarga...');
 
     try {
-      const dxfBuffer = await cadRef.current.exportDxfBuffer();
+      const dxfBuffer = await cadRef.current.exportDxfBuffer(pins);
       if (!dxfBuffer) {
         showToast('No se pudo generar el archivo DXF.');
         setIsLoading(false);

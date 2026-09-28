@@ -14,7 +14,7 @@ export interface CadViewerRef {
   setTool: (tool: 'pan' | 'zoom' | 'select' | 'line' | 'circle' | 'mtext' | 'dimension' | 'revcloud' | 'photo' | 'comment') => void;
   setOrthoMode: (enabled: boolean) => void;
   cancelCommand: () => void;
-  exportDxfBuffer: () => Promise<ArrayBuffer | null>;
+  exportDxfBuffer: (pins?: any[]) => Promise<ArrayBuffer | null>;
   exportRevisionDxfBuffer: (pins: any[]) => Promise<ArrayBuffer | null>;
   getLayers: () => Array<{ name: string; color: number; visible: boolean }>;
   toggleLayer: (layerName: string) => void;
@@ -59,175 +59,306 @@ function ensureDwgConverter() {
   }
 }
 
-function sanitizeDxfHeader(dxfText: string): string {
-  // Step 1: Standard compliant Header replacement
-  const headerStart = dxfText.search(/0\r?\nSECTION\r?\n2\r?\nHEADER/);
-  if (headerStart === -1) return dxfText;
+function buildCompliantDxf(docManager: AcApDocManager | null, pins: any[] = []): ArrayBuffer | null {
+  try {
+    const doc = docManager?.curDocument;
+    const db = doc?.database as any;
 
-  const endSecMatch = dxfText.substring(headerStart).search(/0\r?\nENDSEC/);
-  if (endSecMatch === -1) return dxfText;
+    const knownLayers = new Map<string, number>();
+    knownLayers.set('0', 7);
+    knownLayers.set('REV_MARCAS', 1); // Red
+    knownLayers.set('REV_FOTOS', 4);  // Cyan
+    knownLayers.set('REV_NOTAS', 2);  // Yellow
+    knownLayers.set('REV_MEDIDAS', 3); // Green
 
-  const headerEnd = headerStart + endSecMatch;
-  const endSecFullMatch = dxfText.substring(headerEnd).match(/^0\r?\nENDSEC\r?\n/);
-  const skipLen = endSecFullMatch ? endSecFullMatch[0].length : 8;
-
-  // Extract drawing version or default to modern AutoCAD 2018 (AC1032)
-  const verMatch = dxfText.match(/9\r?\n\$ACADVER\r?\n1\r?\n([^\r\n]+)/);
-  const acadVer = verMatch ? verMatch[1].trim() : 'AC1032';
-
-  // Standard, 100% compliant AutoCAD DXF header without unsupported or malformed variables
-  const standardHeader = [
-    '0', 'SECTION',
-    '2', 'HEADER',
-    '9', '$ACADVER',
-    '1', acadVer,
-    '9', '$HANDSEED',
-    '5', 'FFFF', // Recalculated after handle deduplication
-    '9', '$DWGCODEPAGE',
-    '3', 'UTF-8',
-    '9', '$INSUNITS',
-    '70', '0',
-    '9', '$LUNITS',
-    '70', '2',
-    '9', '$LUPREC',
-    '70', '4',
-    '9', '$UNITMODE',
-    '70', '0',
-    '9', '$MEASUREMENT',
-    '70', '1',
-    '9', '$LTSCALE',
-    '40', '1.0',
-    '9', '$CELTSCALE',
-    '40', '1.0',
-    '9', '$CECOLOR',
-    '62', '256',
-    '9', '$CLAYER',
-    '8', '0',
-    '9', '$CELTYPE',
-    '6', 'ByLayer',
-    '9', '$TEXTSTYLE',
-    '7', 'Standard',
-    '9', '$DIMSTYLE',
-    '2', 'Standard',
-    '9', '$ANGBASE',
-    '50', '0.0',
-    '9', '$ANGDIR',
-    '70', '0',
-    '9', '$AUNITS',
-    '70', '0',
-    '9', '$AUPREC',
-    '70', '0',
-    '9', '$EXTMIN',
-    '10', '-10000.0',
-    '20', '-10000.0',
-    '30', '0.0',
-    '9', '$EXTMAX',
-    '10', '10000.0',
-    '20', '10000.0',
-    '30', '0.0',
-    '9', '$PDMODE',
-    '70', '0',
-    '9', '$PDSIZE',
-    '40', '0.0',
-    '9', '$OSMODE',
-    '70', '0',
-    '9', '$ORTHOMODE',
-    '70', '0',
-    '0', 'ENDSEC'
-  ].join('\r\n');
-
-  const restOfDxf = dxfText.substring(headerEnd + skipLen).replace(/\r?\n/g, '\r\n');
-  const rawMerged = standardHeader + '\r\n' + restOfDxf;
-
-  // Step 2: Patch LAYER table records to ensure group code 390 (PlotStyleName) is present
-  const lines = rawMerged.split(/\r?\n/);
-  const patchedLines: string[] = [];
-  let inLayerTable = false;
-  let inLayerRecord = false;
-  let hasPlotStyle = false;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]?.trim();
-    const nextLine = lines[i + 1]?.trim();
-
-    if (line === '2' && nextLine === 'LAYER' && lines[i - 2]?.trim() === '0' && lines[i - 1]?.trim() === 'TABLE') {
-      inLayerTable = true;
-    }
-
-    if (inLayerTable && line === '0' && nextLine === 'ENDTAB') {
-      if (inLayerRecord && !hasPlotStyle) {
-        patchedLines.push('390', '0');
-        inLayerRecord = false;
+    // Extract all layer names and colors from database if present
+    try {
+      if (db?.tables?.layerTable) {
+        for (const lRec of db.tables.layerTable.newIterator()) {
+          if (lRec.name) {
+            const col = lRec.color?.colorIndex != null ? Math.abs(lRec.color.colorIndex) : 7;
+            knownLayers.set(lRec.name, col || 7);
+          }
+        }
       }
-      inLayerTable = false;
+    } catch (layerErr) {
+      console.warn('Layer iteration fallback:', layerErr);
     }
 
-    if (inLayerTable && line === '0' && nextLine === 'LAYER') {
-      if (inLayerRecord && !hasPlotStyle) {
-        patchedLines.push('390', '0');
+    const lines: string[] = [
+      '0', 'SECTION',
+      '2', 'HEADER',
+      '9', '$ACADVER',
+      '1', 'AC1014', // AutoCAD R14 / 2000 universal standard (no broken class tables or dictionary handles)
+      '9', '$HANDSEED',
+      '5', '20000',
+      '9', '$DWGCODEPAGE',
+      '3', 'ANSI_1252',
+      '9', '$INSUNITS',
+      '70', '0',
+      '9', '$MEASUREMENT',
+      '70', '1',
+      '9', '$CECOLOR',
+      '62', '256',
+      '9', '$CLAYER',
+      '8', '0',
+      '9', '$CELTYPE',
+      '6', 'ByLayer',
+      '9', '$LTSCALE',
+      '40', '1.0',
+      '9', '$TEXTSTYLE',
+      '7', 'STANDARD',
+      '0', 'ENDSEC',
+      '0', 'SECTION',
+      '2', 'TABLES',
+      '0', 'TABLE',
+      '2', 'VPORT',
+      '70', '1',
+      '0', 'VPORT',
+      '2', '*ACTIVE',
+      '70', '0',
+      '10', '0.0',
+      '20', '0.0',
+      '11', '1.0',
+      '21', '1.0',
+      '12', '0.0',
+      '22', '0.0',
+      '40', '1000.0',
+      '41', '1.4',
+      '0', 'ENDTAB',
+      '0', 'TABLE',
+      '2', 'LTYPE',
+      '70', '1',
+      '0', 'LTYPE',
+      '2', 'CONTINUOUS',
+      '70', '0',
+      '3', 'Solid line',
+      '72', '65',
+      '73', '0',
+      '40', '0.0',
+      '0', 'ENDTAB',
+      '0', 'TABLE',
+      '2', 'LAYER',
+      '70', String(knownLayers.size)
+    ];
+
+    // Write all registered layers
+    for (const [lName, lColor] of knownLayers.entries()) {
+      lines.push(
+        '0', 'LAYER',
+        '2', lName,
+        '70', '0',
+        '62', String(lColor),
+        '6', 'CONTINUOUS'
+      );
+    }
+    lines.push('0', 'ENDTAB');
+
+    lines.push(
+      '0', 'TABLE',
+      '2', 'STYLE',
+      '70', '1',
+      '0', 'STYLE',
+      '2', 'STANDARD',
+      '70', '0',
+      '40', '0.0',
+      '41', '1.0',
+      '50', '0.0',
+      '71', '0',
+      '42', '2.5',
+      '3', 'txt',
+      '4', '',
+      '0', 'ENDTAB',
+      '0', 'TABLE',
+      '2', 'APPID',
+      '70', '1',
+      '0', 'APPID',
+      '2', 'ACAD',
+      '70', '0',
+      '0', 'ENDTAB',
+      '0', 'ENDSEC',
+      '0', 'SECTION',
+      '2', 'BLOCKS',
+      '0', 'ENDSEC',
+      '0', 'SECTION',
+      '2', 'ENTITIES'
+    );
+
+    // 1. Export all drawn entities in the active CAD database (Lines, Circles, Arcs, Polylines, Text, Dimensions, etc.)
+    try {
+      if (db?.tables?.blockTable) {
+        for (const btr of db.tables.blockTable.newIterator()) {
+          if (btr.isModelSapce || btr.isModelSpace) {
+            for (const entity of btr.newIterator()) {
+              const entLayer = entity.layer || 'REV_MARCAS';
+              const entColor = entity.color?.colorIndex != null ? String(Math.abs(entity.color.colorIndex)) : '256';
+
+              if (entity.dxfTypeName === 'LINE') {
+                lines.push(
+                  '0', 'LINE',
+                  '8', entLayer,
+                  '62', entColor,
+                  '10', String(entity.startPoint?.x ?? 0),
+                  '20', String(entity.startPoint?.y ?? 0),
+                  '30', String(entity.startPoint?.z ?? 0),
+                  '11', String(entity.endPoint?.x ?? 0),
+                  '21', String(entity.endPoint?.y ?? 0),
+                  '31', String(entity.endPoint?.z ?? 0)
+                );
+              } else if (entity.dxfTypeName === 'CIRCLE') {
+                lines.push(
+                  '0', 'CIRCLE',
+                  '8', entLayer,
+                  '62', entColor,
+                  '10', String(entity.center?.x ?? 0),
+                  '20', String(entity.center?.y ?? 0),
+                  '30', String(entity.center?.z ?? 0),
+                  '40', String(entity.radius ?? 1)
+                );
+              } else if (entity.dxfTypeName === 'ARC') {
+                lines.push(
+                  '0', 'ARC',
+                  '8', entLayer,
+                  '62', entColor,
+                  '10', String(entity.center?.x ?? 0),
+                  '20', String(entity.center?.y ?? 0),
+                  '30', String(entity.center?.z ?? 0),
+                  '40', String(entity.radius ?? 1),
+                  '50', String((entity.startAngle ?? 0) * 180 / Math.PI),
+                  '51', String((entity.endAngle ?? Math.PI * 2) * 180 / Math.PI)
+                );
+              } else if (entity.dxfTypeName === 'LWPOLYLINE' || entity.dxfTypeName === 'POLYLINE') {
+                const vertices = entity.vertices || [];
+                lines.push(
+                  '0', 'LWPOLYLINE',
+                  '8', entLayer,
+                  '62', entColor,
+                  '90', String(vertices.length),
+                  '70', entity.isClosed ? '1' : '0'
+                );
+                for (const v of vertices) {
+                  lines.push('10', String(v.x ?? v.position?.x ?? 0), '20', String(v.y ?? v.position?.y ?? 0));
+                  if (v.bulge != null && v.bulge !== 0) {
+                    lines.push('42', String(v.bulge));
+                  }
+                }
+              } else if (entity.dxfTypeName === 'MTEXT' || entity.dxfTypeName === 'TEXT') {
+                lines.push(
+                  '0', 'TEXT',
+                  '8', entLayer,
+                  '62', entColor,
+                  '10', String(entity.location?.x ?? entity.position?.x ?? 0),
+                  '20', String(entity.location?.y ?? entity.position?.y ?? 0),
+                  '30', String(entity.location?.z ?? entity.position?.z ?? 0),
+                  '40', String(entity.textHeight ?? entity.height ?? 2.5),
+                  '1', String(entity.text || entity.contents || ''),
+                  '7', 'STANDARD'
+                );
+              } else if (entity.dxfTypeName === 'POINT') {
+                lines.push(
+                  '0', 'POINT',
+                  '8', entLayer,
+                  '62', entColor,
+                  '10', String(entity.position?.x ?? entity.location?.x ?? 0),
+                  '20', String(entity.position?.y ?? entity.location?.y ?? 0),
+                  '30', String(entity.position?.z ?? entity.location?.z ?? 0)
+                );
+              } else if (entity.dxfTypeName === 'ELLIPSE') {
+                lines.push(
+                  '0', 'ELLIPSE',
+                  '8', entLayer,
+                  '62', entColor,
+                  '10', String(entity.center?.x ?? 0),
+                  '20', String(entity.center?.y ?? 0),
+                  '30', String(entity.center?.z ?? 0),
+                  '11', String(entity.majorAxis?.x ?? 1),
+                  '21', String(entity.majorAxis?.y ?? 0),
+                  '31', String(entity.majorAxis?.z ?? 0),
+                  '40', String(entity.radiusRatio ?? 0.5),
+                  '41', String(entity.startParam ?? 0),
+                  '42', String(entity.endParam ?? (Math.PI * 2))
+                );
+              } else if (entity.dxfTypeName === 'SOLID' || entity.dxfTypeName === '3DFACE') {
+                lines.push(
+                  '0', entity.dxfTypeName,
+                  '8', entLayer,
+                  '62', entColor,
+                  '10', String(entity.firstCorner?.x ?? 0),
+                  '20', String(entity.firstCorner?.y ?? 0),
+                  '30', String(entity.firstCorner?.z ?? 0),
+                  '11', String(entity.secondCorner?.x ?? 0),
+                  '21', String(entity.secondCorner?.y ?? 0),
+                  '31', String(entity.secondCorner?.z ?? 0),
+                  '12', String(entity.thirdCorner?.x ?? 0),
+                  '22', String(entity.thirdCorner?.y ?? 0),
+                  '32', String(entity.thirdCorner?.z ?? 0),
+                  '13', String(entity.fourthCorner?.x ?? entity.thirdCorner?.x ?? 0),
+                  '23', String(entity.fourthCorner?.y ?? entity.thirdCorner?.y ?? 0),
+                  '33', String(entity.fourthCorner?.z ?? entity.thirdCorner?.z ?? 0)
+                );
+              }
+            }
+          }
+        }
       }
-      inLayerRecord = true;
-      hasPlotStyle = false;
+    } catch (iterErr) {
+      console.warn('Entity iteration fallback:', iterErr);
     }
 
-    if (inLayerRecord && line === '390') {
-      hasPlotStyle = true;
-    }
+    // 2. Export all Photo Pins and Comment Notes with clear labels
+    if (pins && pins.length > 0) {
+      for (const pin of pins) {
+        const isPhoto = pin.type === 'photo';
+        const layer = isPhoto ? 'REV_FOTOS' : 'REV_NOTAS';
+        const color = isPhoto ? '4' : '2';
+        const title = isPhoto ? `FOTO: ${pin.author}` : `NOTA: ${pin.author}`;
+        const noteClean = (pin.note || '').replace(/[\r\n]+/g, ' ');
 
-    patchedLines.push(lines[i]);
-  }
+        // Marker Circle
+        lines.push(
+          '0', 'CIRCLE',
+          '8', layer,
+          '62', color,
+          '10', String(pin.worldX),
+          '20', String(pin.worldY),
+          '30', '0.0',
+          '40', '3.0'
+        );
 
-  // Step 3: Global handle deduplication pass & $HANDSEED calculation
-  const usedHandles = new Set<string>();
-  let maxHandleVal = 0x1000;
-  let handseedIdx = -1;
+        // Center Point
+        lines.push(
+          '0', 'POINT',
+          '8', layer,
+          '62', color,
+          '10', String(pin.worldX),
+          '20', String(pin.worldY),
+          '30', '0.0'
+        );
 
-  for (let i = 0; i < patchedLines.length; i += 2) {
-    const code = patchedLines[i]?.trim();
-    const val = patchedLines[i + 1]?.trim();
-    if (code === '5' || code === '105') {
-      const num = parseInt(val, 16);
-      if (!isNaN(num) && num > maxHandleVal) {
-        maxHandleVal = num;
+        // Annotation Text
+        lines.push(
+          '0', 'TEXT',
+          '8', layer,
+          '62', color,
+          '10', String(pin.worldX + 4.0),
+          '20', String(pin.worldY + 4.0),
+          '30', '0.0',
+          '40', '2.5',
+          '1', `${title} | ${pin.timestamp} | ${noteClean}`,
+          '7', 'STANDARD'
+        );
       }
     }
+
+    lines.push('0', 'ENDSEC', '0', 'EOF');
+    const dxfStr = lines.join('\r\n');
+    const encoder = new TextEncoder();
+    const u8 = encoder.encode(dxfStr);
+    return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
+  } catch (e) {
+    console.error('Error generating compliant DXF:', e);
+    return null;
   }
-
-  let inHeader = false;
-  for (let i = 0; i < patchedLines.length; i += 2) {
-    const code = patchedLines[i]?.trim();
-    const val = patchedLines[i + 1]?.trim();
-
-    if (patchedLines[i - 2]?.trim() === '2' && patchedLines[i - 1]?.trim() === 'HEADER') {
-      inHeader = true;
-    }
-    if (patchedLines[i]?.trim() === '0' && patchedLines[i + 1]?.trim() === 'ENDSEC' && inHeader) {
-      inHeader = false;
-    }
-
-    if (inHeader && patchedLines[i - 2]?.trim() === '9' && patchedLines[i - 1]?.trim() === '$HANDSEED') {
-      handseedIdx = i + 1;
-      continue;
-    }
-
-    if (code === '5' || code === '105') {
-      const upperVal = val ? val.toUpperCase() : '';
-      if (!upperVal || usedHandles.has(upperVal)) {
-        maxHandleVal++;
-        const newHandle = maxHandleVal.toString(16).toUpperCase();
-        patchedLines[i + 1] = newHandle;
-        usedHandles.add(newHandle);
-      } else {
-        usedHandles.add(upperVal);
-      }
-    }
-  }
-
-  if (handseedIdx !== -1) {
-    patchedLines[handseedIdx] = (maxHandleVal + 32).toString(16).toUpperCase();
-  }
-
-  return patchedLines.join('\r\n');
 }
 
 
@@ -449,291 +580,11 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, f
         console.error('Error creating revision layer:', e);
       }
     },
-    exportDxfBuffer: async () => {
-      if (!docManagerRef.current?.curDocument) return null;
-      try {
-        const doc = docManagerRef.current.curDocument;
-        const db = doc.database as any;
-        if (db && typeof db.dxfOut === 'function') {
-          // Initialize key system variables to prevent missing group codes in AutoCAD
-          if (db.angbase == null || isNaN(db.angbase)) db.angbase = 0;
-          if (db.angdir == null || isNaN(db.angdir)) db.angdir = 0;
-          if (db.aunits == null || isNaN(db.aunits)) db.aunits = 0;
-          if (db.auprec == null || isNaN(db.auprec)) db.auprec = 0;
-          if (db.insunits == null || isNaN(db.insunits)) db.insunits = 0;
-          if (db.lunits == null || isNaN(db.lunits)) db.lunits = 2;
-          if (db.luprec == null || isNaN(db.luprec)) db.luprec = 4;
-          if (db.unitmode == null || isNaN(db.unitmode)) db.unitmode = 0;
-          if (db.measurement == null || isNaN(db.measurement)) db.measurement = 1;
-          if (db.ltscale == null || isNaN(db.ltscale)) db.ltscale = 1;
-          if (db.celtscale == null || isNaN(db.celtscale)) db.celtscale = 1;
-          if (db.cmlscale == null || isNaN(db.cmlscale)) db.cmlscale = 1;
-          if (!db.extmin || isNaN(db.extmin.x)) db.extmin = { x: 0, y: 0, z: 0 };
-          if (!db.extmax || isNaN(db.extmax.x)) db.extmax = { x: 1000, y: 1000, z: 0 };
-
-          // Export using modern AutoCAD 2018 DXF dialect (AC1032) in ASCII format
-          const rawDxf = db.dxfOut(undefined, 6, 'AC1032', { format: 'ascii' });
-          let dxfStr = typeof rawDxf === 'string' ? rawDxf : new TextDecoder().decode(rawDxf);
-          
-          // Sanitize header and layer records to ensure 100% AutoCAD compliance
-          dxfStr = sanitizeDxfHeader(dxfStr);
-
-          const encoder = new TextEncoder();
-          const u8 = encoder.encode(dxfStr);
-          return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
-        }
-      } catch (e) {
-        console.error('Error exporting DXF via db.dxfOut:', e);
-      }
-      return null;
+    exportDxfBuffer: async (pins: any[] = []) => {
+      return buildCompliantDxf(docManagerRef.current, pins);
     },
     exportRevisionDxfBuffer: async (pins: any[]) => {
-      try {
-        const lines: string[] = [
-          '0', 'SECTION',
-          '2', 'HEADER',
-          '9', '$ACADVER',
-          '1', 'AC1014',
-          '9', '$HANDSEED',
-          '5', '20000',
-          '9', '$DWGCODEPAGE',
-          '3', 'ANSI_1252',
-          '9', '$INSUNITS',
-          '70', '0',
-          '9', '$MEASUREMENT',
-          '70', '1',
-          '9', '$CECOLOR',
-          '62', '256',
-          '9', '$CLAYER',
-          '8', '0',
-          '9', '$CELTYPE',
-          '6', 'ByLayer',
-          '9', '$LTSCALE',
-          '40', '1.0',
-          '9', '$TEXTSTYLE',
-          '7', 'STANDARD',
-          '0', 'ENDSEC',
-          '0', 'SECTION',
-          '2', 'TABLES',
-          '0', 'TABLE',
-          '2', 'VPORT',
-          '70', '1',
-          '0', 'VPORT',
-          '2', '*ACTIVE',
-          '70', '0',
-          '10', '0.0',
-          '20', '0.0',
-          '11', '1.0',
-          '21', '1.0',
-          '12', '0.0',
-          '22', '0.0',
-          '40', '1000.0',
-          '41', '1.4',
-          '0', 'ENDTAB',
-          '0', 'TABLE',
-          '2', 'LTYPE',
-          '70', '1',
-          '0', 'LTYPE',
-          '2', 'CONTINUOUS',
-          '70', '0',
-          '3', 'Solid line',
-          '72', '65',
-          '73', '0',
-          '40', '0.0',
-          '0', 'ENDTAB',
-          '0', 'TABLE',
-          '2', 'LAYER',
-          '70', '5',
-          '0', 'LAYER',
-          '2', '0',
-          '70', '0',
-          '62', '7',
-          '6', 'CONTINUOUS',
-          '0', 'LAYER',
-          '2', 'REV_MARCAS',
-          '70', '0',
-          '62', '1', // Red
-          '6', 'CONTINUOUS',
-          '0', 'LAYER',
-          '2', 'REV_FOTOS',
-          '70', '0',
-          '62', '4', // Cyan
-          '6', 'CONTINUOUS',
-          '0', 'LAYER',
-          '2', 'REV_NOTAS',
-          '70', '0',
-          '62', '2', // Yellow
-          '6', 'CONTINUOUS',
-          '0', 'LAYER',
-          '2', 'REV_MEDIDAS',
-          '70', '0',
-          '62', '3', // Green
-          '6', 'CONTINUOUS',
-          '0', 'ENDTAB',
-          '0', 'TABLE',
-          '2', 'STYLE',
-          '70', '1',
-          '0', 'STYLE',
-          '2', 'STANDARD',
-          '70', '0',
-          '40', '0.0',
-          '41', '1.0',
-          '50', '0.0',
-          '71', '0',
-          '42', '2.5',
-          '3', 'txt',
-          '4', '',
-          '0', 'ENDTAB',
-          '0', 'TABLE',
-          '2', 'APPID',
-          '70', '1',
-          '0', 'APPID',
-          '2', 'ACAD',
-          '70', '0',
-          '0', 'ENDTAB',
-          '0', 'ENDSEC',
-          '0', 'SECTION',
-          '2', 'BLOCKS',
-          '0', 'ENDSEC',
-          '0', 'SECTION',
-          '2', 'ENTITIES'
-        ];
-
-        // 1. Export all drawn entities in the active CAD database (Lines, Circles, Arcs, Polylines, Text)
-        try {
-          const doc = docManagerRef.current?.curDocument;
-          const db = doc?.database as any;
-          if (db?.tables?.blockTable) {
-            for (const btr of db.tables.blockTable.newIterator()) {
-              if (btr.isModelSapce || btr.isModelSpace) {
-                for (const entity of btr.newIterator()) {
-                  const entLayer = entity.layer || 'REV_MARCAS';
-                  const entColor = entity.color?.colorIndex != null ? String(entity.color.colorIndex) : '1';
-
-                  if (entity.dxfTypeName === 'LINE') {
-                    lines.push(
-                      '0', 'LINE',
-                      '8', entLayer,
-                      '62', entColor,
-                      '10', String(entity.startPoint?.x ?? 0),
-                      '20', String(entity.startPoint?.y ?? 0),
-                      '30', String(entity.startPoint?.z ?? 0),
-                      '11', String(entity.endPoint?.x ?? 0),
-                      '21', String(entity.endPoint?.y ?? 0),
-                      '31', String(entity.endPoint?.z ?? 0)
-                    );
-                  } else if (entity.dxfTypeName === 'CIRCLE') {
-                    lines.push(
-                      '0', 'CIRCLE',
-                      '8', entLayer,
-                      '62', entColor,
-                      '10', String(entity.center?.x ?? 0),
-                      '20', String(entity.center?.y ?? 0),
-                      '30', String(entity.center?.z ?? 0),
-                      '40', String(entity.radius ?? 1)
-                    );
-                  } else if (entity.dxfTypeName === 'ARC') {
-                    lines.push(
-                      '0', 'ARC',
-                      '8', entLayer,
-                      '62', entColor,
-                      '10', String(entity.center?.x ?? 0),
-                      '20', String(entity.center?.y ?? 0),
-                      '30', String(entity.center?.z ?? 0),
-                      '40', String(entity.radius ?? 1),
-                      '50', String((entity.startAngle ?? 0) * 180 / Math.PI),
-                      '51', String((entity.endAngle ?? Math.PI * 2) * 180 / Math.PI)
-                    );
-                  } else if (entity.dxfTypeName === 'LWPOLYLINE' || entity.dxfTypeName === 'POLYLINE') {
-                    const vertices = entity.vertices || [];
-                    lines.push(
-                      '0', 'LWPOLYLINE',
-                      '8', entLayer,
-                      '62', entColor,
-                      '90', String(vertices.length),
-                      '70', entity.isClosed ? '1' : '0'
-                    );
-                    for (const v of vertices) {
-                      lines.push('10', String(v.x ?? v.position?.x ?? 0), '20', String(v.y ?? v.position?.y ?? 0));
-                      if (v.bulge) {
-                        lines.push('42', String(v.bulge));
-                      }
-                    }
-                  } else if (entity.dxfTypeName === 'MTEXT' || entity.dxfTypeName === 'TEXT') {
-                    lines.push(
-                      '0', 'TEXT',
-                      '8', entLayer,
-                      '62', entColor,
-                      '10', String(entity.location?.x ?? entity.position?.x ?? 0),
-                      '20', String(entity.location?.y ?? entity.position?.y ?? 0),
-                      '30', String(entity.location?.z ?? entity.position?.z ?? 0),
-                      '40', String(entity.textHeight ?? entity.height ?? 2.5),
-                      '1', String(entity.text || entity.contents || ''),
-                      '7', 'STANDARD'
-                    );
-                  }
-                }
-              }
-            }
-          }
-        } catch (iterErr) {
-          console.warn('Entity iteration fallback:', iterErr);
-        }
-
-        // 2. Export all Photo Pins and Comment Notes with clear labels
-        if (pins && pins.length > 0) {
-          for (const pin of pins) {
-            const isPhoto = pin.type === 'photo';
-            const layer = isPhoto ? 'REV_FOTOS' : 'REV_NOTAS';
-            const color = isPhoto ? '4' : '2';
-            const title = isPhoto ? `FOTO: ${pin.author}` : `NOTA: ${pin.author}`;
-            const noteClean = (pin.note || '').replace(/[\r\n]+/g, ' ');
-
-            // Marker Circle
-            lines.push(
-              '0', 'CIRCLE',
-              '8', layer,
-              '62', color,
-              '10', String(pin.worldX),
-              '20', String(pin.worldY),
-              '30', '0.0',
-              '40', '3.0'
-            );
-
-            // Center Point
-            lines.push(
-              '0', 'POINT',
-              '8', layer,
-              '62', color,
-              '10', String(pin.worldX),
-              '20', String(pin.worldY),
-              '30', '0.0'
-            );
-
-            // Annotation Text
-            lines.push(
-              '0', 'TEXT',
-              '8', layer,
-              '62', color,
-              '10', String(pin.worldX + 4.0),
-              '20', String(pin.worldY + 4.0),
-              '30', '0.0',
-              '40', '2.5',
-              '1', `${title} | ${pin.timestamp} | ${noteClean}`,
-              '7', 'STANDARD'
-            );
-          }
-        }
-
-        lines.push('0', 'ENDSEC', '0', 'EOF');
-        const dxfStr = lines.join('\r\n');
-        const encoder = new TextEncoder();
-        const u8 = encoder.encode(dxfStr);
-        return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
-      } catch (e) {
-        console.error('Error generating revision DXF:', e);
-        return null;
-      }
+      return buildCompliantDxf(docManagerRef.current, pins);
     },
 
     screenToWorld: (screenX: number, screenY: number) => {
