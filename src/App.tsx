@@ -2,6 +2,8 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { useGoogleDrive } from './useGoogleDrive';
 import { CadViewer } from './CadViewer';
 import type { CadViewerRef } from './CadViewer';
+import { RealtimeManager } from './realtime/RealtimeManager';
+import type { UserPresence, RealtimeMessage } from './realtime/types';
 import './App.css';
 
 export interface CadPin {
@@ -53,6 +55,11 @@ export default function App() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
 
+  // Multiusuario Realtime State
+  const [peers, setPeers] = useState<UserPresence[]>([]);
+  const [screenPeerCursors, setScreenPeerCursors] = useState<Array<{ user: UserPresence; screenX: number; screenY: number }>>([]);
+  const realtimeRef = useRef<RealtimeManager | null>(null);
+
   // WCS Anchored Pins (Photos + Comments)
   const [pins, setPins] = useState<CadPin[]>([]);
   const [showPins, setShowPins] = useState(true);
@@ -78,6 +85,51 @@ export default function App() {
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const viewerContainerRef = useRef<HTMLDivElement>(null);
   const animFrameRef = useRef<number | null>(null);
+
+  // Initialize Realtime Collaboration Manager
+  useEffect(() => {
+    if (!isIdentified || !userName) return;
+
+    const roomId = currentFileId || currentFileName || 'default_room';
+    const rt = new RealtimeManager(roomId, userName);
+    realtimeRef.current = rt;
+
+    const unsubPresence = rt.onPresenceChange((activePeers) => {
+      setPeers(activePeers);
+    });
+
+    const unsubMessages = rt.onMessage((msg: RealtimeMessage) => {
+      if (msg.type === 'pin_add') {
+        const newPin = msg.payload?.pin as CadPin;
+        if (newPin) {
+          setPins(prev => {
+            if (prev.some(p => p.id === newPin.id)) return prev;
+            const updated = [...prev, newPin];
+            savePinsToStorage(updated);
+            return updated;
+          });
+          showToast(`👷 ${msg.sender.userName} agregó una ${newPin.type === 'photo' ? 'foto' : 'nota'} al plano.`);
+        }
+      } else if (msg.type === 'pin_delete') {
+        const pinId = msg.payload?.pinId;
+        if (pinId) {
+          setPins(prev => {
+            const updated = prev.filter(p => p.id !== pinId);
+            savePinsToStorage(updated);
+            return updated;
+          });
+        }
+      }
+    });
+
+    return () => {
+      unsubPresence();
+      unsubMessages();
+      rt.destroy();
+      realtimeRef.current = null;
+    };
+  }, [isIdentified, userName, currentFileId, currentFileName]);
+
 
   // Check saved name and URL parameters on mount
   useEffect(() => {
@@ -121,37 +173,57 @@ export default function App() {
     localStorage.setItem(key, JSON.stringify(updatedPins));
   }, [currentFileName]);
 
-  // Dynamic RAF loop to project CAD World Coordinates (WCS) to Screen Pixels
+  // Dynamic RAF loop to project CAD World Coordinates (WCS) to Screen Pixels (Pins + Peer Cursors)
   useEffect(() => {
     let active = true;
 
-    const updateScreenPins = () => {
+    const updateScreenEntities = () => {
       if (!active) return;
 
-      if (cadRef.current && pins.length > 0 && viewerContainerRef.current) {
+      if (cadRef.current && viewerContainerRef.current) {
         const containerRect = viewerContainerRef.current.getBoundingClientRect();
-        const projected = pins.map((p) => {
-          const pt = cadRef.current?.worldToScreen(p.worldX, p.worldY);
-          if (!pt) {
-            return { pin: p, screenX: -999, screenY: -999, isVisible: false };
-          }
-          const isInside = pt.x >= -30 && pt.x <= containerRect.width + 30 && pt.y >= -30 && pt.y <= containerRect.height + 30;
-          return {
-            pin: p,
-            screenX: pt.x,
-            screenY: pt.y,
-            isVisible: isInside
-          };
-        });
-        setScreenPins(projected);
-      } else {
-        setScreenPins([]);
+        
+        // 1. Project Pins
+        if (pins.length > 0) {
+          const projected = pins.map((p) => {
+            const pt = cadRef.current?.worldToScreen(p.worldX, p.worldY);
+            if (!pt) {
+              return { pin: p, screenX: -999, screenY: -999, isVisible: false };
+            }
+            const isInside = pt.x >= -30 && pt.x <= containerRect.width + 30 && pt.y >= -30 && pt.y <= containerRect.height + 30;
+            return {
+              pin: p,
+              screenX: pt.x,
+              screenY: pt.y,
+              isVisible: isInside
+            };
+          });
+          setScreenPins(projected);
+        } else {
+          setScreenPins([]);
+        }
+
+        // 2. Project Peer Cursors
+        if (peers.length > 0) {
+          const projectedCursors: Array<{ user: UserPresence; screenX: number; screenY: number }> = [];
+          peers.forEach(peer => {
+            if (peer.cursor) {
+              const pt = cadRef.current?.worldToScreen(peer.cursor.worldX, peer.cursor.worldY);
+              if (pt && pt.x >= -20 && pt.x <= containerRect.width + 20 && pt.y >= -20 && pt.y <= containerRect.height + 20) {
+                projectedCursors.push({ user: peer, screenX: pt.x, screenY: pt.y });
+              }
+            }
+          });
+          setScreenPeerCursors(projectedCursors);
+        } else {
+          setScreenPeerCursors([]);
+        }
       }
 
-      animFrameRef.current = requestAnimationFrame(updateScreenPins);
+      animFrameRef.current = requestAnimationFrame(updateScreenEntities);
     };
 
-    animFrameRef.current = requestAnimationFrame(updateScreenPins);
+    animFrameRef.current = requestAnimationFrame(updateScreenEntities);
 
     return () => {
       active = false;
@@ -159,7 +231,8 @@ export default function App() {
         cancelAnimationFrame(animFrameRef.current);
       }
     };
-  }, [pins]);
+  }, [pins, peers]);
+
 
   // Auto-download file if shared URL parameter is present
   useEffect(() => {
@@ -483,6 +556,17 @@ export default function App() {
     e.target.value = '';
   };
 
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!viewerContainerRef.current || !cadRef.current || !realtimeRef.current) return;
+    const rect = viewerContainerRef.current.getBoundingClientRect();
+    const screenX = e.clientX - rect.left;
+    const screenY = e.clientY - rect.top;
+    const worldPt = cadRef.current.screenToWorld(screenX, screenY);
+    if (worldPt) {
+      realtimeRef.current.sendCursor(worldPt.x, worldPt.y);
+    }
+  };
+
   const handleSavePhotoPin = () => {
     if (!newPhotoData || !pendingWorldCoord) return;
 
@@ -500,6 +584,7 @@ export default function App() {
     const updated = [...pins, newPin];
     setPins(updated);
     savePinsToStorage(updated);
+    realtimeRef.current?.broadcastPin(newPin);
 
     setNewPhotoData(null);
     setPendingWorldCoord(null);
@@ -523,6 +608,7 @@ export default function App() {
     const updated = [...pins, newPin];
     setPins(updated);
     savePinsToStorage(updated);
+    realtimeRef.current?.broadcastPin(newPin);
 
     setIsCommentModalOpen(false);
     setPendingWorldCoord(null);
@@ -534,9 +620,11 @@ export default function App() {
     const updated = pins.filter(p => p.id !== pinId);
     setPins(updated);
     savePinsToStorage(updated);
+    realtimeRef.current?.broadcastDeletePin(pinId);
     setSelectedPin(null);
     showToast('Marcador eliminado.');
   };
+
 
   // Filter layers
   const rawLayers = cadRef.current?.getLayers() || [];
@@ -642,6 +730,22 @@ export default function App() {
               </div>
             )}
           </div>
+
+          {/* Live Multi-user Collaborators Avatars */}
+          {peers.length > 0 && (
+            <div className="collaborators-group" title="Usuarios colaborando en este plano en tiempo real">
+              {peers.map((c) => (
+                <div 
+                  key={c.userId} 
+                  className="collaborator-avatar" 
+                  style={{ backgroundColor: c.color }}
+                  title={`${c.userName} (Revisor en línea)`}
+                >
+                  {c.userName.slice(0, 2).toUpperCase()}
+                </div>
+              ))}
+            </div>
+          )}
 
           <span className="user-badge" title={`Conectado como ${userName}`}>
             <span className={`status-dot ${authenticated ? 'connected' : 'disconnected'}`}></span>
@@ -801,6 +905,7 @@ export default function App() {
         ref={viewerContainerRef} 
         className="viewer-container"
         onClick={handleCanvasClickForPin}
+        onPointerMove={handlePointerMove}
       >
         {/* Drag & Drop Overlay */}
         {isDraggingFile && (
@@ -850,6 +955,26 @@ export default function App() {
                 showToast(typeof err === 'string' ? err : 'Error al cargar visor.');
               }}
             />
+
+            {/* Live Peer Cursors in WCS */}
+            {screenPeerCursors.map(({ user, screenX, screenY }) => (
+              <div 
+                key={user.userId}
+                className="peer-cursor"
+                style={{ 
+                  left: `${screenX}px`, 
+                  top: `${screenY}px`,
+                  pointerEvents: 'none'
+                }}
+              >
+                <svg className="peer-cursor-pointer" width="18" height="18" viewBox="0 0 16 16" fill={user.color}>
+                  <path d="M0 0l4.5 13.5 2.5-4.5 4.5-2.5L0 0z" stroke="#000" strokeWidth="1" />
+                </svg>
+                <span className="peer-cursor-label" style={{ backgroundColor: user.color }}>
+                  {user.userName}
+                </span>
+              </div>
+            ))}
 
             {/* WCS-Projected Interactive Pins (Photos and Comments) */}
             {showPins && screenPins.map(({ pin, screenX, screenY, isVisible }) => {

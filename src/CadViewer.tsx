@@ -58,25 +58,84 @@ function ensureDwgConverter() {
 }
 
 function sanitizeDxfHeader(dxfText: string): string {
-  // Fix missing group codes for AutoCAD header variables
-  let fixed = dxfText;
-  fixed = fixed.replace(/(  9\r?\n\$ANGBASE\r?\n)(?=\s*9\r?\n)/g, '$1 50\r\n0.0\r\n');
-  fixed = fixed.replace(/(  9\r?\n\$ANGDIR\r?\n)(?=\s*9\r?\n)/g, '$1 70\r\n0\r\n');
-  fixed = fixed.replace(/(  9\r?\n\$AUNITS\r?\n)(?=\s*9\r?\n)/g, '$1 70\r\n0\r\n');
-  fixed = fixed.replace(/(  9\r?\n\$AUPREC\r?\n)(?=\s*9\r?\n)/g, '$1 70\r\n0\r\n');
-  fixed = fixed.replace(/(  9\r?\n\$UNITMODE\r?\n)(?=\s*9\r?\n)/g, '$1 70\r\n0\r\n');
-  fixed = fixed.replace(/(  9\r?\n\$MEASUREMENT\r?\n)(?=\s*9\r?\n)/g, '$1 70\r\n1\r\n');
-  fixed = fixed.replace(/(  9\r?\n\$INSUNITS\r?\n)(?=\s*9\r?\n)/g, '$1 70\r\n0\r\n');
-  fixed = fixed.replace(/(  9\r?\n\$LUNITS\r?\n)(?=\s*9\r?\n)/g, '$1 70\r\n2\r\n');
-  fixed = fixed.replace(/(  9\r?\n\$LUPREC\r?\n)(?=\s*9\r?\n)/g, '$1 70\r\n4\r\n');
-  fixed = fixed.replace(/(  9\r?\n\$LTSCALE\r?\n)(?=\s*9\r?\n)/g, '$1 40\r\n1.0\r\n');
-  fixed = fixed.replace(/(  9\r?\n\$CELTSCALE\r?\n)(?=\s*9\r?\n)/g, '$1 40\r\n1.0\r\n');
-  fixed = fixed.replace(/(  9\r?\n\$CMLSCALE\r?\n)(?=\s*9\r?\n)/g, '$1 40\r\n1.0\r\n');
-  fixed = fixed.replace(/(  9\r?\n\$TILEMODE\r?\n)(?=\s*9\r?\n)/g, '$1 70\r\n1\r\n');
-  fixed = fixed.replace(/(  9\r?\n\$PSLTSCALE\r?\n)(?=\s*9\r?\n)/g, '$1 70\r\n1\r\n');
-  fixed = fixed.replace(/(  9\r?\n\$LWDISPLAY\r?\n)(?=\s*9\r?\n)/g, '$1 70\r\n0\r\n');
-  return fixed;
+  const lines = dxfText.split(/\r?\n/);
+  const result: string[] = [];
+  let inHeader = false;
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const nextLine = lines[i + 1];
+
+    if (line.trim() === 'HEADER' && lines[i - 1]?.trim() === '2') {
+      inHeader = true;
+    }
+
+    if (inHeader && line.trim() === 'ENDSEC' && lines[i - 1]?.trim() === '0') {
+      inHeader = false;
+    }
+
+    if (inHeader && line.trim() === '9') {
+      const varName = nextLine ? nextLine.trim() : '';
+
+      // Remove non-standard header variables that cause AutoCAD parser errors / warnings
+      if (['$CMLEADERSTYLE', '$HPCOLOR', '$HPBACKGROUNDCOLOR', '$HPLAYER', '$HPTRANSPARENCY'].includes(varName)) {
+        i += 2;
+        // Skip associated value group code and value if present
+        if (i < lines.length && lines[i].trim() !== '9' && lines[i].trim() !== '0') {
+          i += 2;
+        }
+        continue;
+      }
+
+      // Ensure $EXTMIN has valid 10, 20, 30 coordinates
+      if (varName === '$EXTMIN') {
+        result.push('9', '$EXTMIN');
+        i += 2;
+        if (lines[i]?.trim() !== '10') {
+          result.push('10', '0.0', '20', '0.0', '30', '0.0');
+        }
+        continue;
+      }
+
+      // Ensure $EXTMAX has valid 10, 20, 30 coordinates
+      if (varName === '$EXTMAX') {
+        result.push('9', '$EXTMAX');
+        i += 2;
+        if (lines[i]?.trim() !== '10') {
+          result.push('10', '1000.0', '20', '1000.0', '30', '0.0');
+        }
+        continue;
+      }
+
+      // Ensure $CECOLOR has valid color code
+      if (varName === '$CECOLOR') {
+        result.push('9', '$CECOLOR');
+        i += 2;
+        if (lines[i]?.trim() !== '62' && lines[i]?.trim() !== '420') {
+          result.push('62', '256');
+        }
+        continue;
+      }
+
+      // Ensure $ANGBASE has valid angle code
+      if (varName === '$ANGBASE') {
+        result.push('9', '$ANGBASE');
+        i += 2;
+        if (lines[i]?.trim() !== '50') {
+          result.push('50', '0.0');
+        }
+        continue;
+      }
+    }
+
+    result.push(line);
+    i++;
+  }
+
+  return result.join('\r\n');
 }
+
 
 export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, fileName, bgColor = '#111827', onLoaded, onError }, ref) => {
 
@@ -306,6 +365,8 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, f
           if (db.ltscale == null || isNaN(db.ltscale)) db.ltscale = 1;
           if (db.celtscale == null || isNaN(db.celtscale)) db.celtscale = 1;
           if (db.cmlscale == null || isNaN(db.cmlscale)) db.cmlscale = 1;
+          if (!db.extmin || isNaN(db.extmin.x)) db.extmin = { x: 0, y: 0, z: 0 };
+          if (!db.extmax || isNaN(db.extmax.x)) db.extmax = { x: 1000, y: 1000, z: 0 };
 
           // Export using modern AutoCAD 2018 DXF dialect (AC1032) in ASCII format
           const rawDxf = db.dxfOut(undefined, 6, 'AC1032', { format: 'ascii' });
