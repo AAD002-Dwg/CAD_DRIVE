@@ -12,10 +12,23 @@
     "preview:host": "vite preview --host"
   },
   "dependencies": {
-    "@mlightcad/cad-viewer": "^1.6.3",
-    "@mlightcad/libredwg-converter": "^3.14.2",
+    "@mlightcad/cad-agent-plugin": "^1.7.3",
+    "@mlightcad/cad-html-plugin": "^1.7.3",
+    "@mlightcad/cad-pdf-plugin": "^1.7.3",
+    "@mlightcad/cad-simple-viewer": "^1.7.3",
+    "@mlightcad/cad-svg-plugin": "^1.7.3",
+    "@mlightcad/cad-viewer": "^1.7.3",
+    "@mlightcad/data-model": "^1.15.0",
+    "@mlightcad/libredwg-converter": "^3.15.0",
+    "@mlightcad/mtext-parser": "^1.5.3",
+    "@mlightcad/mtext-renderer": "^0.13.1",
+    "@mlightcad/pdf-renderer": "^1.7.3",
+    "@mlightcad/three-renderer": "^1.7.3",
+    "@velipso/polybool": "^1.1.1",
+    "lodash-es": "^4.17.21",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "three": "^0.172.0"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
