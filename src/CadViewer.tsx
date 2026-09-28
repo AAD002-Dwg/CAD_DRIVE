@@ -72,10 +72,6 @@ function sanitizeDxfHeader(dxfText: string): string {
   const verMatch = dxfText.match(/9\r?\n\$ACADVER\r?\n1\r?\n([^\r\n]+)/);
   const acadVer = verMatch ? verMatch[1].trim() : 'AC1032';
 
-  // Extract handseed if available
-  const handseedMatch = dxfText.match(/9\r?\n\$HANDSEED\r?\n5\r?\n([^\r\n]+)/);
-  const handseed = handseedMatch ? handseedMatch[1].trim() : 'FFFF';
-
   // Standard, 100% compliant AutoCAD DXF header without unsupported or malformed variables
   const standardHeader = [
     '0', 'SECTION',
@@ -83,7 +79,7 @@ function sanitizeDxfHeader(dxfText: string): string {
     '9', '$ACADVER',
     '1', acadVer,
     '9', '$HANDSEED',
-    '5', handseed,
+    '5', 'FFFF', // Will be recalculated after handle deduplication
     '9', '$DWGCODEPAGE',
     '3', 'UTF-8',
     '9', '$INSUNITS',
@@ -138,7 +134,64 @@ function sanitizeDxfHeader(dxfText: string): string {
   ].join('\r\n');
 
   const restOfDxf = dxfText.substring(headerEnd + skipLen).replace(/\r?\n/g, '\r\n');
-  return standardHeader + '\r\n' + restOfDxf;
+  const fullDxf = standardHeader + '\r\n' + restOfDxf;
+
+  // Global handle deduplication pass to ensure EVERY entity and table record has a unique hex handle
+  const lines = fullDxf.split(/\r?\n/);
+  const usedHandles = new Set<string>();
+  let maxHandleVal = 0x1000;
+  let handseedIdx = -1;
+
+  // Step 1: Discover max handle value
+  for (let i = 0; i < lines.length; i += 2) {
+    const code = lines[i]?.trim();
+    const val = lines[i + 1]?.trim();
+    if (code === '5' || code === '105') {
+      const num = parseInt(val, 16);
+      if (!isNaN(num) && num > maxHandleVal) {
+        maxHandleVal = num;
+      }
+    }
+  }
+
+  // Step 2: Deduplicate any duplicated handles
+  let inHeader = false;
+  for (let i = 0; i < lines.length; i += 2) {
+    const code = lines[i]?.trim();
+    const val = lines[i + 1]?.trim();
+
+    if (lines[i - 2]?.trim() === '2' && lines[i - 1]?.trim() === 'HEADER') {
+      inHeader = true;
+    }
+    if (lines[i]?.trim() === '0' && lines[i + 1]?.trim() === 'ENDSEC' && inHeader) {
+      inHeader = false;
+    }
+
+    if (inHeader && lines[i - 2]?.trim() === '9' && lines[i - 1]?.trim() === '$HANDSEED') {
+      handseedIdx = i + 1;
+      continue;
+    }
+
+    if (code === '5' || code === '105') {
+      const upperVal = val ? val.toUpperCase() : '';
+      if (!upperVal || usedHandles.has(upperVal)) {
+        // Collision detected: assign a brand new unique hex handle
+        maxHandleVal++;
+        const newHandle = maxHandleVal.toString(16).toUpperCase();
+        lines[i + 1] = newHandle;
+        usedHandles.add(newHandle);
+      } else {
+        usedHandles.add(upperVal);
+      }
+    }
+  }
+
+  // Step 3: Set $HANDSEED to be strictly greater than all assigned handles
+  if (handseedIdx !== -1) {
+    lines[handseedIdx] = (maxHandleVal + 32).toString(16).toUpperCase();
+  }
+
+  return lines.join('\r\n');
 }
 
 
