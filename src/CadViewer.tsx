@@ -102,6 +102,14 @@ function buildCompliantDxf(docManager: AcApDocManager | null, pins: any[] = []):
     const H_MODEL_BLOCK  = nextHandle(); // BLOCK *Model_Space
     const H_PAPER_BLOCK  = nextHandle(); // BLOCK *Paper_Space
 
+    const H_VIEW_TABLE   = nextHandle();
+    const H_UCS_TABLE    = nextHandle();
+    const H_BLOCK_RECORD_TABLE = nextHandle();
+    const H_BLOCK_RECORD_MODEL = nextHandle();
+    const H_BLOCK_RECORD_PAPER = nextHandle();
+    const H_DIMSTYLE_TABLE = nextHandle();
+    const H_DIMSTYLE_STD   = nextHandle();
+
     // ── HEADER ─────────────────────────────────────────────────────────────
     const lines: string[] = [
       '0', 'SECTION',
@@ -180,13 +188,47 @@ function buildCompliantDxf(docManager: AcApDocManager | null, pins: any[] = []):
       '0', 'ENDTAB',
     );
 
-    // APPID table  (no subclass markers needed in AC1014)
+    // VIEW table (Empty)
+    lines.push(
+      '0', 'TABLE', '2', 'VIEW', '5', H_VIEW_TABLE,
+      '100', 'AcDbSymbolTable', '70', '0',
+      '0', 'ENDTAB',
+    );
+
+    // UCS table (Empty)
+    lines.push(
+      '0', 'TABLE', '2', 'UCS', '5', H_UCS_TABLE,
+      '100', 'AcDbSymbolTable', '70', '0',
+      '0', 'ENDTAB',
+    );
+
+    // APPID table
     lines.push(
       '0', 'TABLE', '2', 'APPID', '5', H_APPID_TABLE,
       '100', 'AcDbSymbolTable', '70', '1',
       '0', 'APPID', '5', H_APPID_ACAD,
       '100', 'AcDbSymbolTableRecord', '100', 'AcDbRegAppTableRecord',
       '2', 'ACAD', '70', '0',
+      '0', 'ENDTAB',
+    );
+
+    // DIMSTYLE table
+    lines.push(
+      '0', 'TABLE', '2', 'DIMSTYLE', '5', H_DIMSTYLE_TABLE,
+      '100', 'AcDbSymbolTable', '70', '1', '100', 'AcDbDimStyleTable', '71', '0',
+      '0', 'DIMSTYLE', '5', H_DIMSTYLE_STD, '100', 'AcDbSymbolTableRecord', '100', 'AcDbDimStyleTableRecord',
+      '2', 'Standard', '70', '0',
+      '0', 'ENDTAB',
+    );
+
+    // BLOCK_RECORD table
+    lines.push(
+      '0', 'TABLE', '2', 'BLOCK_RECORD', '5', H_BLOCK_RECORD_TABLE,
+      '100', 'AcDbSymbolTable', '70', '2',
+      '0', 'BLOCK_RECORD', '5', H_BLOCK_RECORD_MODEL, '100', 'AcDbSymbolTableRecord', '100', 'AcDbBlockTableRecord',
+      '2', '*Model_Space', '340', '0',
+      '0', 'BLOCK_RECORD', '5', H_BLOCK_RECORD_PAPER, '100', 'AcDbSymbolTableRecord', '100', 'AcDbBlockTableRecord',
+      '2', '*Paper_Space', '340', '0',
       '0', 'ENDTAB',
     );
 
