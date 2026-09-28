@@ -60,6 +60,9 @@ export default function App() {
   const [screenPeerCursors, setScreenPeerCursors] = useState<Array<{ user: UserPresence; screenX: number; screenY: number }>>([]);
   const realtimeRef = useRef<RealtimeManager | null>(null);
 
+  // Ortho mode
+  const [isOrthoEnabled, setIsOrthoEnabled] = useState(false);
+
   // WCS Anchored Pins (Photos + Comments)
   const [pins, setPins] = useState<CadPin[]>([]);
   const [showPins, setShowPins] = useState(true);
@@ -396,7 +399,28 @@ export default function App() {
     showToast('Comando cancelado');
   };
 
-  // DXF Export to Google Drive
+  const handleToggleOrtho = () => {
+    const next = !isOrthoEnabled;
+    setIsOrthoEnabled(next);
+    cadRef.current?.setOrthoMode(next);
+    showToast(next ? '📐 Modo Ortogonal (ORTO) ACTIVADO (F8)' : '📐 Modo Ortogonal DESACTIVADO');
+  };
+
+  // Keyboard shortcut listener for F8 (Ortho) and Escape (Cancel)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'F8') {
+        e.preventDefault();
+        handleToggleOrtho();
+      } else if (e.key === 'Escape') {
+        handleCancelTool();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOrthoEnabled]);
+
+  // DXF Export to Google Drive (Full Plan + Annotations)
   const handleSaveRevisionDrive = async () => {
     setIsMobileMenuOpen(false);
     if (!cadRef.current || !currentFileName) return;
@@ -432,13 +456,13 @@ export default function App() {
     }
   };
 
-  // Direct Local DXF Download
+  // Direct Local DXF Download (Full Plan + Annotations)
   const handleDownloadLocalDxf = async () => {
     setIsMobileMenuOpen(false);
     if (!cadRef.current || !currentFileName) return;
 
     setIsLoading(true);
-    setLoadingMsg('Generando archivo DXF para descarga...');
+    setLoadingMsg('Generando archivo DXF completo para descarga...');
 
     try {
       const dxfBuffer = await cadRef.current.exportDxfBuffer();
@@ -450,7 +474,7 @@ export default function App() {
 
       const dateStr = new Date().toISOString().slice(0, 10);
       const baseName = currentFileName.substring(0, currentFileName.lastIndexOf('.')) || currentFileName;
-      const downloadFileName = `${baseName}_Anotado_${dateStr}.dxf`;
+      const downloadFileName = `${baseName}_Completo_${dateStr}.dxf`;
 
       const blob = new Blob([dxfBuffer], { type: 'application/dxf;charset=utf-8' });
       const url = URL.createObjectURL(blob);
@@ -462,10 +486,49 @@ export default function App() {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
-      showToast(`💾 Archivo "${downloadFileName}" descargado con éxito.`);
+      showToast(`💾 Archivo completo "${downloadFileName}" descargado.`);
     } catch (e) {
       console.error(e);
       showToast('Error al descargar el archivo DXF.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Direct Local Lightweight Revision DXF Download (Only markups, clouds, photos, notes)
+  const handleDownloadRevisionDxf = async () => {
+    setIsMobileMenuOpen(false);
+    if (!cadRef.current || !currentFileName) return;
+
+    setIsLoading(true);
+    setLoadingMsg('Generando DXF liviano con marcas y fotos de obra...');
+
+    try {
+      const dxfBuffer = await cadRef.current.exportRevisionDxfBuffer(pins);
+      if (!dxfBuffer) {
+        showToast('No se pudo generar el DXF de revisión.');
+        setIsLoading(false);
+        return;
+      }
+
+      const dateStr = new Date().toISOString().slice(0, 10);
+      const baseName = currentFileName.substring(0, currentFileName.lastIndexOf('.')) || currentFileName;
+      const downloadFileName = `${baseName}_REVISION_MARCAS_${dateStr}.dxf`;
+
+      const blob = new Blob([dxfBuffer], { type: 'application/dxf;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = downloadFileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      showToast(`🎯 Capa de revisión "${downloadFileName}" descargada.`);
+    } catch (e) {
+      console.error(e);
+      showToast('Error al generar el DXF de revisión.');
     } finally {
       setIsLoading(false);
     }
@@ -770,14 +833,28 @@ export default function App() {
 
             {fileBuffer && (
               <>
+                <button 
+                  className={`btn btn-sm ${isOrthoEnabled ? 'btn-accent' : 'btn-ghost'}`} 
+                  onClick={handleToggleOrtho} 
+                  title="Modo Ortogonal (F8) - Forzar líneas y cotas a 90°"
+                >
+                  📐 {isOrthoEnabled ? 'ORTO: ON' : 'Orto'}
+                </button>
+
                 {authenticated && (
                   <button className="btn btn-accent btn-sm" onClick={handleSaveRevisionDrive} title="Guardar revisión en Google Drive">
                     💾 Guardar en Drive
                   </button>
                 )}
-                <button className="btn btn-ghost btn-sm" onClick={handleDownloadLocalDxf} title="Descargar archivo DXF">
-                  ⬇️ Descargar DXF
+
+                <button className="btn btn-accent btn-sm" onClick={handleDownloadRevisionDxf} title="Descargar capa liviana con nubes, marcas, cotas y fotos">
+                  🎯 Exportar Marcas (DXF)
                 </button>
+
+                <button className="btn btn-ghost btn-sm" onClick={handleDownloadLocalDxf} title="Descargar plano completo con todas las capas originales y marcas">
+                  ⬇️ Plano Completo (DXF)
+                </button>
+
                 <button className="btn btn-ghost btn-sm" onClick={handleCaptureScreenshot} title="Captura de pantalla">
                   📸 Captura
                 </button>
@@ -833,8 +910,14 @@ export default function App() {
                       💾 Guardar Revisión en Google Drive
                     </button>
                   )}
+                  <button className="drawer-item accent" onClick={() => { setIsMobileMenuOpen(false); handleToggleOrtho(); }}>
+                    📐 Modo Ortogonal (ORTO): {isOrthoEnabled ? 'ACTIVADO' : 'DESACTIVADO'}
+                  </button>
+                  <button className="drawer-item" onClick={handleDownloadRevisionDxf}>
+                    🎯 Descargar Solo Marcas y Fotos (DXF Liviano)
+                  </button>
                   <button className="drawer-item" onClick={handleDownloadLocalDxf}>
-                    ⬇️ Descargar Copia DXF al Celular
+                    ⬇️ Descargar Plano Completo (DXF)
                   </button>
                   <button className="drawer-item" onClick={handleCaptureScreenshot}>
                     📸 Captura PNG / Compartir por WhatsApp
@@ -1077,6 +1160,13 @@ export default function App() {
               title="Medición / Cota Lineal"
             >
               📏
+            </button>
+            <button 
+              className={`toolbar-btn ${isOrthoEnabled ? 'active' : ''}`} 
+              onClick={handleToggleOrtho}
+              title={`Modo Ortogonal (F8) [${isOrthoEnabled ? 'ON' : 'OFF'}]`}
+            >
+              📐
             </button>
 
             <div className="toolbar-divider"></div>

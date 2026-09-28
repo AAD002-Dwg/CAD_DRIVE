@@ -12,8 +12,10 @@ import { AcDbLibreDwgConverter } from '@mlightcad/libredwg-converter';
 export interface CadViewerRef {
   zoomExtents: () => void;
   setTool: (tool: 'pan' | 'zoom' | 'select' | 'line' | 'circle' | 'mtext' | 'dimension' | 'revcloud' | 'photo' | 'comment') => void;
+  setOrthoMode: (enabled: boolean) => void;
   cancelCommand: () => void;
   exportDxfBuffer: () => Promise<ArrayBuffer | null>;
+  exportRevisionDxfBuffer: (pins: any[]) => Promise<ArrayBuffer | null>;
   getLayers: () => Array<{ name: string; color: number; visible: boolean }>;
   toggleLayer: (layerName: string) => void;
   setAllLayersVisible: (visible: boolean) => void;
@@ -58,6 +60,7 @@ function ensureDwgConverter() {
 }
 
 function sanitizeDxfHeader(dxfText: string): string {
+  // Step 1: Standard compliant Header replacement
   const headerStart = dxfText.search(/0\r?\nSECTION\r?\n2\r?\nHEADER/);
   if (headerStart === -1) return dxfText;
 
@@ -79,7 +82,7 @@ function sanitizeDxfHeader(dxfText: string): string {
     '9', '$ACADVER',
     '1', acadVer,
     '9', '$HANDSEED',
-    '5', 'FFFF', // Will be recalculated after handle deduplication
+    '5', 'FFFF', // Recalculated after handle deduplication
     '9', '$DWGCODEPAGE',
     '3', 'UTF-8',
     '9', '$INSUNITS',
@@ -134,18 +137,54 @@ function sanitizeDxfHeader(dxfText: string): string {
   ].join('\r\n');
 
   const restOfDxf = dxfText.substring(headerEnd + skipLen).replace(/\r?\n/g, '\r\n');
-  const fullDxf = standardHeader + '\r\n' + restOfDxf;
+  const rawMerged = standardHeader + '\r\n' + restOfDxf;
 
-  // Global handle deduplication pass to ensure EVERY entity and table record has a unique hex handle
-  const lines = fullDxf.split(/\r?\n/);
+  // Step 2: Patch LAYER table records to ensure group code 390 (PlotStyleName) is present
+  const lines = rawMerged.split(/\r?\n/);
+  const patchedLines: string[] = [];
+  let inLayerTable = false;
+  let inLayerRecord = false;
+  let hasPlotStyle = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]?.trim();
+    const nextLine = lines[i + 1]?.trim();
+
+    if (line === '2' && nextLine === 'LAYER' && lines[i - 2]?.trim() === '0' && lines[i - 1]?.trim() === 'TABLE') {
+      inLayerTable = true;
+    }
+
+    if (inLayerTable && line === '0' && nextLine === 'ENDTAB') {
+      if (inLayerRecord && !hasPlotStyle) {
+        patchedLines.push('390', '0');
+        inLayerRecord = false;
+      }
+      inLayerTable = false;
+    }
+
+    if (inLayerTable && line === '0' && nextLine === 'LAYER') {
+      if (inLayerRecord && !hasPlotStyle) {
+        patchedLines.push('390', '0');
+      }
+      inLayerRecord = true;
+      hasPlotStyle = false;
+    }
+
+    if (inLayerRecord && line === '390') {
+      hasPlotStyle = true;
+    }
+
+    patchedLines.push(lines[i]);
+  }
+
+  // Step 3: Global handle deduplication pass & $HANDSEED calculation
   const usedHandles = new Set<string>();
   let maxHandleVal = 0x1000;
   let handseedIdx = -1;
 
-  // Step 1: Discover max handle value
-  for (let i = 0; i < lines.length; i += 2) {
-    const code = lines[i]?.trim();
-    const val = lines[i + 1]?.trim();
+  for (let i = 0; i < patchedLines.length; i += 2) {
+    const code = patchedLines[i]?.trim();
+    const val = patchedLines[i + 1]?.trim();
     if (code === '5' || code === '105') {
       const num = parseInt(val, 16);
       if (!isNaN(num) && num > maxHandleVal) {
@@ -154,20 +193,19 @@ function sanitizeDxfHeader(dxfText: string): string {
     }
   }
 
-  // Step 2: Deduplicate any duplicated handles
   let inHeader = false;
-  for (let i = 0; i < lines.length; i += 2) {
-    const code = lines[i]?.trim();
-    const val = lines[i + 1]?.trim();
+  for (let i = 0; i < patchedLines.length; i += 2) {
+    const code = patchedLines[i]?.trim();
+    const val = patchedLines[i + 1]?.trim();
 
-    if (lines[i - 2]?.trim() === '2' && lines[i - 1]?.trim() === 'HEADER') {
+    if (patchedLines[i - 2]?.trim() === '2' && patchedLines[i - 1]?.trim() === 'HEADER') {
       inHeader = true;
     }
-    if (lines[i]?.trim() === '0' && lines[i + 1]?.trim() === 'ENDSEC' && inHeader) {
+    if (patchedLines[i]?.trim() === '0' && patchedLines[i + 1]?.trim() === 'ENDSEC' && inHeader) {
       inHeader = false;
     }
 
-    if (inHeader && lines[i - 2]?.trim() === '9' && lines[i - 1]?.trim() === '$HANDSEED') {
+    if (inHeader && patchedLines[i - 2]?.trim() === '9' && patchedLines[i - 1]?.trim() === '$HANDSEED') {
       handseedIdx = i + 1;
       continue;
     }
@@ -175,10 +213,9 @@ function sanitizeDxfHeader(dxfText: string): string {
     if (code === '5' || code === '105') {
       const upperVal = val ? val.toUpperCase() : '';
       if (!upperVal || usedHandles.has(upperVal)) {
-        // Collision detected: assign a brand new unique hex handle
         maxHandleVal++;
         const newHandle = maxHandleVal.toString(16).toUpperCase();
-        lines[i + 1] = newHandle;
+        patchedLines[i + 1] = newHandle;
         usedHandles.add(newHandle);
       } else {
         usedHandles.add(upperVal);
@@ -186,12 +223,11 @@ function sanitizeDxfHeader(dxfText: string): string {
     }
   }
 
-  // Step 3: Set $HANDSEED to be strictly greater than all assigned handles
   if (handseedIdx !== -1) {
-    lines[handseedIdx] = (maxHandleVal + 32).toString(16).toUpperCase();
+    patchedLines[handseedIdx] = (maxHandleVal + 32).toString(16).toUpperCase();
   }
 
-  return lines.join('\r\n');
+  return patchedLines.join('\r\n');
 }
 
 
@@ -361,6 +397,14 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, f
         console.error('Error cancelling command:', e);
       }
     },
+    setOrthoMode: (enabled: boolean) => {
+      if (!docManagerRef.current) return;
+      try {
+        docManagerRef.current.sendStringToExecute(enabled ? 'orthomode 1 ' : 'orthomode 0 ');
+      } catch (e) {
+        console.error('Error setting ortho mode:', e);
+      }
+    },
     setTool: (tool) => {
       if (!docManagerRef.current) return;
       try {
@@ -384,7 +428,8 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, f
             docManagerRef.current.sendStringToExecute('mtext');
             break;
           case 'dimension':
-            docManagerRef.current.sendStringToExecute('dimlinear');
+            // Configure compact, proportional dimension style (text height 2.5, arrow size 2.5, scale 1.0)
+            docManagerRef.current.sendStringToExecute('dimtxt 2.5 dimasz 2.5 dimscale 1.0 dimdec 2 dimlinear ');
             break;
           case 'revcloud':
             docManagerRef.current.sendStringToExecute('revcloud');
@@ -430,7 +475,7 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, f
           const rawDxf = db.dxfOut(undefined, 6, 'AC1032', { format: 'ascii' });
           let dxfStr = typeof rawDxf === 'string' ? rawDxf : new TextDecoder().decode(rawDxf);
           
-          // Sanitize header to ensure 100% AutoCAD compliance
+          // Sanitize header and layer records to ensure 100% AutoCAD compliance
           dxfStr = sanitizeDxfHeader(dxfStr);
 
           const encoder = new TextEncoder();
@@ -441,6 +486,233 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, f
         console.error('Error exporting DXF via db.dxfOut:', e);
       }
       return null;
+    },
+    exportRevisionDxfBuffer: async (pins: any[]) => {
+      try {
+        const lines: string[] = [
+          '0', 'SECTION',
+          '2', 'HEADER',
+          '9', '$ACADVER',
+          '1', 'AC1032',
+          '9', '$HANDSEED',
+          '5', '20000',
+          '9', '$DWGCODEPAGE',
+          '3', 'UTF-8',
+          '9', '$INSUNITS',
+          '70', '0',
+          '9', '$MEASUREMENT',
+          '70', '1',
+          '9', '$CECOLOR',
+          '62', '256',
+          '9', '$CLAYER',
+          '8', '0',
+          '9', '$CELTYPE',
+          '6', 'ByLayer',
+          '9', '$LTSCALE',
+          '40', '1.0',
+          '9', '$TEXTSTYLE',
+          '7', 'Standard',
+          '9', '$DIMSTYLE',
+          '2', 'Standard',
+          '0', 'ENDSEC',
+          '0', 'SECTION',
+          '2', 'TABLES',
+          '0', 'TABLE',
+          '2', 'VPORT',
+          '5', '8',
+          '330', '0',
+          '100', 'AcDbSymbolTable',
+          '70', '1',
+          '0', 'VPORT',
+          '5', '1C',
+          '330', '8',
+          '100', 'AcDbSymbolTableRecord',
+          '100', 'AcDbViewportTableRecord',
+          '2', '*Active',
+          '70', '0',
+          '10', '0.0',
+          '20', '0.0',
+          '11', '1.0',
+          '21', '1.0',
+          '12', '0.0',
+          '22', '0.0',
+          '40', '1000.0',
+          '41', '1.4',
+          '0', 'ENDTAB',
+          '0', 'TABLE',
+          '2', 'LTYPE',
+          '5', '5',
+          '330', '0',
+          '100', 'AcDbSymbolTable',
+          '70', '1',
+          '0', 'LTYPE',
+          '5', '14',
+          '330', '5',
+          '100', 'AcDbSymbolTableRecord',
+          '100', 'AcDbLinetypeTableRecord',
+          '2', 'Continuous',
+          '70', '0',
+          '3', 'Solid line',
+          '72', '65',
+          '73', '0',
+          '40', '0.0',
+          '0', 'ENDTAB',
+          '0', 'TABLE',
+          '2', 'LAYER',
+          '5', '2',
+          '330', '0',
+          '100', 'AcDbSymbolTable',
+          '70', '4',
+          '0', 'LAYER',
+          '5', '10',
+          '330', '2',
+          '100', 'AcDbSymbolTableRecord',
+          '100', 'AcDbLayerTableRecord',
+          '2', '0',
+          '70', '0',
+          '62', '7',
+          '6', 'Continuous',
+          '290', '1',
+          '370', '-3',
+          '390', '0',
+          '0', 'LAYER',
+          '5', '11',
+          '330', '2',
+          '100', 'AcDbSymbolTableRecord',
+          '100', 'AcDbLayerTableRecord',
+          '2', 'REV_MARCAS',
+          '70', '0',
+          '62', '1',
+          '6', 'Continuous',
+          '290', '1',
+          '370', '35',
+          '390', '0',
+          '0', 'LAYER',
+          '5', '12',
+          '330', '2',
+          '100', 'AcDbSymbolTableRecord',
+          '100', 'AcDbLayerTableRecord',
+          '2', 'REV_FOTOS',
+          '70', '0',
+          '62', '4',
+          '6', 'Continuous',
+          '290', '1',
+          '370', '25',
+          '390', '0',
+          '0', 'LAYER',
+          '5', '13',
+          '330', '2',
+          '100', 'AcDbSymbolTableRecord',
+          '100', 'AcDbLayerTableRecord',
+          '2', 'REV_NOTAS',
+          '70', '0',
+          '62', '2',
+          '6', 'Continuous',
+          '290', '1',
+          '370', '25',
+          '390', '0',
+          '0', 'ENDTAB',
+          '0', 'TABLE',
+          '2', 'STYLE',
+          '5', '3',
+          '330', '0',
+          '100', 'AcDbSymbolTable',
+          '70', '1',
+          '0', 'STYLE',
+          '5', '15',
+          '330', '3',
+          '100', 'AcDbSymbolTableRecord',
+          '100', 'AcDbTextStyleTableRecord',
+          '2', 'Standard',
+          '70', '0',
+          '40', '0.0',
+          '41', '1.0',
+          '50', '0.0',
+          '71', '0',
+          '42', '2.5',
+          '3', 'txt',
+          '4', '',
+          '0', 'ENDTAB',
+          '0', 'ENDSEC',
+          '0', 'SECTION',
+          '2', 'BLOCKS',
+          '0', 'ENDSEC',
+          '0', 'SECTION',
+          '2', 'ENTITIES'
+        ];
+
+        let handleCounter = 0x200;
+
+        // Export all Photo pins and Comment pins
+        if (pins && pins.length > 0) {
+          for (const pin of pins) {
+            const isPhoto = pin.type === 'photo';
+            const layer = isPhoto ? 'REV_FOTOS' : 'REV_NOTAS';
+            const color = isPhoto ? '4' : '2';
+            const circleHandle = (handleCounter++).toString(16).toUpperCase();
+            const ptHandle = (handleCounter++).toString(16).toUpperCase();
+            const textHandle = (handleCounter++).toString(16).toUpperCase();
+            const title = isPhoto ? `FOTO: ${pin.author}` : `NOTA: ${pin.author}`;
+            const noteClean = (pin.note || '').replace(/[\r\n]+/g, ' ');
+
+            // Circle target icon
+            lines.push(
+              '0', 'CIRCLE',
+              '5', circleHandle,
+              '100', 'AcDbEntity',
+              '8', layer,
+              '62', color,
+              '100', 'AcDbCircle',
+              '10', String(pin.worldX),
+              '20', String(pin.worldY),
+              '30', '0.0',
+              '40', '3.0'
+            );
+
+            // Center Point
+            lines.push(
+              '0', 'POINT',
+              '5', ptHandle,
+              '100', 'AcDbEntity',
+              '8', layer,
+              '62', color,
+              '100', 'AcDbPoint',
+              '10', String(pin.worldX),
+              '20', String(pin.worldY),
+              '30', '0.0'
+            );
+
+            // Formatted MText Annotation
+            lines.push(
+              '0', 'MTEXT',
+              '5', textHandle,
+              '100', 'AcDbEntity',
+              '8', layer,
+              '62', color,
+              '100', 'AcDbMText',
+              '10', String(pin.worldX + 4.0),
+              '20', String(pin.worldY + 4.0),
+              '30', '0.0',
+              '40', '2.5',
+              '41', '200.0',
+              '71', '1',
+              '72', '1',
+              '1', `\\A1;{\\fArial|b1;${title}}\\P{\\fArial;${pin.timestamp}}\\P{\\fArial;${noteClean}}`,
+              '7', 'Standard',
+              '50', '0.0'
+            );
+          }
+        }
+
+        lines.push('0', 'ENDSEC', '0', 'EOF');
+        const dxfStr = lines.join('\r\n');
+        const encoder = new TextEncoder();
+        const u8 = encoder.encode(dxfStr);
+        return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
+      } catch (e) {
+        console.error('Error generating revision DXF:', e);
+        return null;
+      }
     },
 
     screenToWorld: (screenX: number, screenY: number) => {
