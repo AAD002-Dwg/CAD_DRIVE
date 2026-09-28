@@ -11,16 +11,20 @@ import { AcDbLibreDwgConverter } from '@mlightcad/libredwg-converter';
 
 export interface CadViewerRef {
   zoomExtents: () => void;
-  setTool: (tool: 'pan' | 'zoom' | 'select' | 'line' | 'circle' | 'mtext' | 'dimension' | 'photo') => void;
+  setTool: (tool: 'pan' | 'zoom' | 'select' | 'line' | 'circle' | 'mtext' | 'dimension' | 'revcloud' | 'photo' | 'comment') => void;
   cancelCommand: () => void;
   exportDxfBuffer: () => Promise<ArrayBuffer | null>;
   getLayers: () => Array<{ name: string; color: number; visible: boolean }>;
   toggleLayer: (layerName: string) => void;
   setAllLayersVisible: (visible: boolean) => void;
+  createRevisionLayer: (layerName: string, colorIndex?: number) => void;
   getLayouts: () => string[];
   switchLayout: (layoutName: string) => void;
   captureCanvas: () => string | null;
   getCanvasElement: () => HTMLCanvasElement | null;
+  screenToWorld: (screenX: number, screenY: number) => { x: number; y: number } | null;
+  worldToScreen: (worldX: number, worldY: number) => { x: number; y: number } | null;
+  onCameraChange?: (callback: () => void) => () => void;
 }
 
 interface CadViewerProps {
@@ -29,7 +33,9 @@ interface CadViewerProps {
   bgColor?: string;
   onLoaded?: () => void;
   onError?: (err: any) => void;
+  onCameraUpdate?: () => void;
 }
+
 
 // Register DWG Converter once
 let isConverterRegistered = false;
@@ -228,22 +234,70 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, f
           case 'dimension':
             docManagerRef.current.sendStringToExecute('dimlinear');
             break;
+          case 'revcloud':
+            docManagerRef.current.sendStringToExecute('revcloud');
+            break;
         }
       } catch (e) {
         console.error('Error setting tool:', e);
       }
     },
+    createRevisionLayer: (layerName: string, colorIndex = 1) => {
+      if (!docManagerRef.current?.curDocument) return;
+      try {
+        // Create or switch to revision layer with specified color (1 = Red, 2 = Yellow, 3 = Green, 4 = Cyan, 6 = Magenta)
+        docManagerRef.current.sendStringToExecute(`-layer m ${layerName} c ${colorIndex} ${layerName}  `);
+        refreshLayers();
+      } catch (e) {
+        console.error('Error creating revision layer:', e);
+      }
+    },
     exportDxfBuffer: async () => {
       if (!docManagerRef.current?.curDocument) return null;
       try {
-        const db = docManagerRef.current.curDocument.database as any;
-        if (db && typeof db.exportDxf === 'function') {
-          const dxfStr = db.exportDxf();
-          const encoder = new TextEncoder();
-          return encoder.encode(dxfStr).buffer;
+        const doc = docManagerRef.current.curDocument;
+        const db = doc.database as any;
+        if (db && typeof db.dxfOut === 'function') {
+          const dxfOutResult = db.dxfOut(undefined, 6);
+          if (typeof dxfOutResult === 'string') {
+            const encoder = new TextEncoder();
+            const u8 = encoder.encode(dxfOutResult);
+            return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
+          } else if (dxfOutResult instanceof Uint8Array) {
+            return dxfOutResult.buffer.slice(dxfOutResult.byteOffset, dxfOutResult.byteOffset + dxfOutResult.byteLength) as ArrayBuffer;
+          } else if (dxfOutResult instanceof ArrayBuffer) {
+            return dxfOutResult;
+          }
         }
       } catch (e) {
-        console.error('Error exporting DXF:', e);
+        console.error('Error exporting DXF via db.dxfOut:', e);
+      }
+      return null;
+    },
+
+    screenToWorld: (screenX: number, screenY: number) => {
+      if (!docManagerRef.current?.curDocument) return null;
+      try {
+        const view = (docManagerRef.current.curDocument as any).view;
+        if (view && typeof view.screenToWorld === 'function') {
+          const pt = view.screenToWorld({ x: screenX, y: screenY });
+          return { x: pt.x, y: pt.y };
+        }
+      } catch (e) {
+        console.error('Error in screenToWorld:', e);
+      }
+      return null;
+    },
+    worldToScreen: (worldX: number, worldY: number) => {
+      if (!docManagerRef.current?.curDocument) return null;
+      try {
+        const view = (docManagerRef.current.curDocument as any).view;
+        if (view && typeof view.worldToScreen === 'function') {
+          const pt = view.worldToScreen({ x: worldX, y: worldY });
+          return { x: pt.x, y: pt.y };
+        }
+      } catch (e) {
+        console.error('Error in worldToScreen:', e);
       }
       return null;
     },
@@ -303,6 +357,7 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, f
       return containerRef.current?.querySelector('canvas') || null;
     }
   }));
+
 
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative', backgroundColor: bgColor }}>

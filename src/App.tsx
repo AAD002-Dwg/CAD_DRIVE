@@ -4,15 +4,24 @@ import { CadViewer } from './CadViewer';
 import type { CadViewerRef } from './CadViewer';
 import './App.css';
 
-export interface PhotoPin {
+export interface CadPin {
   id: string;
-  xPercent: number;
-  yPercent: number;
-  photoDataUrl: string;
+  type: 'photo' | 'comment';
+  worldX: number;
+  worldY: number;
   note: string;
+  photoDataUrl?: string;
   author: string;
   timestamp: string;
+  layerName?: string;
 }
+
+const BG_THEMES = [
+  { id: 'black', label: 'Negro AutoCAD', color: '#000000', icon: '⚫' },
+  { id: 'dark', label: 'Azul Noche', color: '#0a0e1a', icon: '🌌' },
+  { id: 'slate', label: 'Gris Pizarra', color: '#1e293b', icon: '🔲' },
+  { id: 'white', label: 'Blanco Papel', color: '#ffffff', icon: '⚪' }
+];
 
 export default function App() {
   const { 
@@ -35,26 +44,40 @@ export default function App() {
   
   const [isLoading, setIsLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState('');
-  const [activeTool, setActiveTool] = useState<'pan' | 'zoom' | 'select' | 'line' | 'circle' | 'mtext' | 'dimension' | 'photo'>('pan');
+  const [activeTool, setActiveTool] = useState<'pan' | 'zoom' | 'select' | 'line' | 'circle' | 'mtext' | 'dimension' | 'revcloud' | 'photo' | 'comment'>('pan');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
-  const [cadBgColor, setCadBgColor] = useState('#0a0e1a');
+  const [cadBgColor, setCadBgColor] = useState('#000000');
   const [layerSearch, setLayerSearch] = useState('');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
 
-  // Photo Pinning State
-  const [photoPins, setPhotoPins] = useState<PhotoPin[]>([]);
+  // WCS Anchored Pins (Photos + Comments)
+  const [pins, setPins] = useState<CadPin[]>([]);
   const [showPins, setShowPins] = useState(true);
-  const [pendingPinCoord, setPendingPinCoord] = useState<{ x: number; y: number } | null>(null);
+  const [screenPins, setScreenPins] = useState<Array<{ pin: CadPin; screenX: number; screenY: number; isVisible: boolean }>>([]);
+  
+  // New Photo modal state
+  const [pendingWorldCoord, setPendingWorldCoord] = useState<{ x: number; y: number } | null>(null);
   const [newPhotoData, setNewPhotoData] = useState<string | null>(null);
   const [newPhotoNote, setNewPhotoNote] = useState('');
-  const [selectedPin, setSelectedPin] = useState<PhotoPin | null>(null);
+  
+  // New Comment modal state
+  const [isCommentModalOpen, setIsCommentModalOpen] = useState(false);
+  const [newCommentNote, setNewCommentNote] = useState('');
+
+  // Selected Pin detail modal
+  const [selectedPin, setSelectedPin] = useState<CadPin | null>(null);
+
+  // Revision count for layers
+  const [revisionCount, setRevisionCount] = useState(1);
 
   const cadRef = useRef<CadViewerRef>(null);
   const localFileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const viewerContainerRef = useRef<HTMLDivElement>(null);
+  const animFrameRef = useRef<number | null>(null);
 
   // Check saved name and URL parameters on mount
   useEffect(() => {
@@ -74,29 +97,69 @@ export default function App() {
     }
   }, []);
 
-  // Load photo pins from localStorage whenever currentFileName changes
+  // Load CAD pins from localStorage whenever currentFileName changes
   useEffect(() => {
     if (currentFileName) {
-      const key = `cad_photos_${currentFileName}`;
+      const key = `cad_pins_${currentFileName}`;
       const savedPins = localStorage.getItem(key);
       if (savedPins) {
         try {
-          setPhotoPins(JSON.parse(savedPins));
+          setPins(JSON.parse(savedPins));
         } catch (e) {
-          console.error('Error parsing stored photo pins:', e);
+          console.error('Error parsing stored pins:', e);
         }
       } else {
-        setPhotoPins([]);
+        setPins([]);
       }
     }
   }, [currentFileName]);
 
-  // Save photo pins to localStorage
-  const savePinsToStorage = useCallback((pins: PhotoPin[]) => {
+  // Save pins to localStorage
+  const savePinsToStorage = useCallback((updatedPins: CadPin[]) => {
     if (!currentFileName) return;
-    const key = `cad_photos_${currentFileName}`;
-    localStorage.setItem(key, JSON.stringify(pins));
+    const key = `cad_pins_${currentFileName}`;
+    localStorage.setItem(key, JSON.stringify(updatedPins));
   }, [currentFileName]);
+
+  // Dynamic RAF loop to project CAD World Coordinates (WCS) to Screen Pixels
+  useEffect(() => {
+    let active = true;
+
+    const updateScreenPins = () => {
+      if (!active) return;
+
+      if (cadRef.current && pins.length > 0 && viewerContainerRef.current) {
+        const containerRect = viewerContainerRef.current.getBoundingClientRect();
+        const projected = pins.map((p) => {
+          const pt = cadRef.current?.worldToScreen(p.worldX, p.worldY);
+          if (!pt) {
+            return { pin: p, screenX: -999, screenY: -999, isVisible: false };
+          }
+          const isInside = pt.x >= -30 && pt.x <= containerRect.width + 30 && pt.y >= -30 && pt.y <= containerRect.height + 30;
+          return {
+            pin: p,
+            screenX: pt.x,
+            screenY: pt.y,
+            isVisible: isInside
+          };
+        });
+        setScreenPins(projected);
+      } else {
+        setScreenPins([]);
+      }
+
+      animFrameRef.current = requestAnimationFrame(updateScreenPins);
+    };
+
+    animFrameRef.current = requestAnimationFrame(updateScreenPins);
+
+    return () => {
+      active = false;
+      if (animFrameRef.current) {
+        cancelAnimationFrame(animFrameRef.current);
+      }
+    };
+  }, [pins]);
 
   // Auto-download file if shared URL parameter is present
   useEffect(() => {
@@ -112,7 +175,7 @@ export default function App() {
           setFileBuffer(buffer);
           showToast(`Plano ${currentFileName} cargado exitosamente.`);
         } else {
-          showToast('No se pudo descargar el plano. Asegúrate de tener permisos en Drive.');
+          showToast('No se pudo descargar el plano. Verifica permisos de acceso.');
         }
         setIsLoading(false);
       };
@@ -140,7 +203,6 @@ export default function App() {
       setCurrentFileName(fileName);
       setParentFolderId(folderId);
       
-      // Update URL search params so the link is shareable immediately
       const newUrl = new URL(window.location.href);
       newUrl.searchParams.set('fileId', fileId);
       newUrl.searchParams.set('fileName', fileName);
@@ -160,7 +222,6 @@ export default function App() {
     });
   };
 
-  // Local file picker handler
   const handleLocalFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -200,7 +261,6 @@ export default function App() {
     reader.readAsArrayBuffer(file);
   };
 
-  // Drag & Drop handlers
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -225,7 +285,7 @@ export default function App() {
   const handleCopyShareLink = () => {
     setIsMobileMenuOpen(false);
     if (!currentFileId) {
-      showToast('Este plano es local. Para compartirlo mediante enlace, ábrelo desde Google Drive.');
+      showToast('Este plano es local. Para compartirlo con un enlace, ábrelo desde Google Drive.');
       return;
     }
     const shareUrl = `${window.location.origin}${window.location.pathname}?fileId=${currentFileId}&fileName=${encodeURIComponent(currentFileName || 'Plano.dwg')}`;
@@ -233,9 +293,24 @@ export default function App() {
     showToast('🔗 ¡Enlace de revisión copiado al portapapeles!');
   };
 
-  const handleToolChange = (tool: 'pan' | 'zoom' | 'select' | 'line' | 'circle' | 'mtext' | 'dimension' | 'photo') => {
+  // Tool change & Revision Cloud with Layer metadata
+  const handleToolChange = (tool: 'pan' | 'zoom' | 'select' | 'line' | 'circle' | 'mtext' | 'dimension' | 'revcloud' | 'photo' | 'comment') => {
     setActiveTool(tool);
-    if (tool !== 'photo') {
+
+    if (tool === 'revcloud') {
+      // Create dedicated revision layer with structured metadata: REV_01_AUTOR_FECHA_HORA
+      const now = new Date();
+      const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
+      const timeStr = now.toTimeString().slice(0, 5).replace(/:/g, '');
+      const cleanAuthor = userName.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase() || 'REVISOR';
+      const revLayerName = `REV_${String(revisionCount).padStart(2, '0')}_${cleanAuthor}_${dateStr}_${timeStr}`;
+      
+      cadRef.current?.createRevisionLayer(revLayerName, 1); // Red layer
+      setRevisionCount(prev => prev + 1);
+      showToast(`☁️ Capa activa: ${revLayerName}`);
+    }
+
+    if (tool !== 'photo' && tool !== 'comment') {
       cadRef.current?.setTool(tool);
     }
   };
@@ -243,22 +318,23 @@ export default function App() {
   const handleCancelTool = () => {
     cadRef.current?.cancelCommand();
     setActiveTool('pan');
-    setPendingPinCoord(null);
+    setPendingWorldCoord(null);
+    setIsCommentModalOpen(false);
     showToast('Comando cancelado');
   };
 
-  // Google Drive DXF Save
+  // DXF Export to Google Drive
   const handleSaveRevisionDrive = async () => {
     setIsMobileMenuOpen(false);
     if (!cadRef.current || !currentFileName) return;
 
     setIsLoading(true);
-    setLoadingMsg('Exportando marcas de revisión en formato DXF...');
+    setLoadingMsg('Exportando marcas y entidades en formato DXF...');
 
     try {
       const dxfBuffer = await cadRef.current.exportDxfBuffer();
       if (!dxfBuffer) {
-        showToast('No se pudo generar el archivo DXF de revisiones.');
+        showToast('No se pudo generar el archivo DXF. Asegúrate de tener el plano abierto.');
         setIsLoading(false);
         return;
       }
@@ -273,7 +349,7 @@ export default function App() {
       if (success) {
         showToast(`¡Revisión guardada como "${revisionFileName}" en Google Drive!`);
       } else {
-        showToast('Error al subir a Drive. Asegúrate de tener permisos o usa "Descargar DXF".');
+        showToast('Error al subir a Drive. Usa "Descargar DXF" para guardarlo localmente.');
       }
     } catch (e) {
       console.error(e);
@@ -303,7 +379,7 @@ export default function App() {
       const baseName = currentFileName.substring(0, currentFileName.lastIndexOf('.')) || currentFileName;
       const downloadFileName = `${baseName}_Anotado_${dateStr}.dxf`;
 
-      const blob = new Blob([dxfBuffer], { type: 'application/dxf' });
+      const blob = new Blob([dxfBuffer], { type: 'application/dxf;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -313,7 +389,7 @@ export default function App() {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
-      showToast(`💾 Archivo "${downloadFileName}" descargado.`);
+      showToast(`💾 Archivo "${downloadFileName}" descargado con éxito.`);
     } catch (e) {
       console.error(e);
       showToast('Error al descargar el archivo DXF.');
@@ -334,7 +410,6 @@ export default function App() {
         return;
       }
 
-      // Check if mobile Web Share API is available with image
       if (navigator.share && navigator.canShare) {
         try {
           const res = await fetch(dataUrl);
@@ -354,7 +429,6 @@ export default function App() {
         }
       }
 
-      // Fallback: Direct download
       const a = document.createElement('a');
       a.href = dataUrl;
       a.download = `${currentFileName || 'Plano'}_Captura.png`;
@@ -368,23 +442,35 @@ export default function App() {
     }
   };
 
-  // Photo Pinning Handlers
-  const handleCanvasClickForPhoto = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (activeTool !== 'photo') return;
-    if (!viewerContainerRef.current) return;
+  // Click on Canvas for WCS-anchored Photos or Comments
+  const handleCanvasClickForPin = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (activeTool !== 'photo' && activeTool !== 'comment') return;
+    if (!viewerContainerRef.current || !cadRef.current) return;
 
     const rect = viewerContainerRef.current.getBoundingClientRect();
-    const x = ((e.clientX - rect.left) / rect.width) * 100;
-    const y = ((e.clientY - rect.top) / rect.height) * 100;
+    const screenX = e.clientX - rect.left;
+    const screenY = e.clientY - rect.top;
 
-    setPendingPinCoord({ x, y });
-    // Trigger mobile camera or file input
-    cameraInputRef.current?.click();
+    // Convert Screen Pixels directly to CAD World Coordinates (WCS)
+    const worldPoint = cadRef.current.screenToWorld(screenX, screenY);
+    if (!worldPoint) {
+      showToast('No se pudieron obtener las coordenadas del plano.');
+      return;
+    }
+
+    setPendingWorldCoord(worldPoint);
+
+    if (activeTool === 'photo') {
+      cameraInputRef.current?.click();
+    } else if (activeTool === 'comment') {
+      setNewCommentNote('');
+      setIsCommentModalOpen(true);
+    }
   };
 
   const handleCameraCapture = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file || !pendingPinCoord) return;
+    if (!file || !pendingWorldCoord) return;
 
     const reader = new FileReader();
     reader.onload = (evt) => {
@@ -398,34 +484,58 @@ export default function App() {
   };
 
   const handleSavePhotoPin = () => {
-    if (!newPhotoData || !pendingPinCoord) return;
+    if (!newPhotoData || !pendingWorldCoord) return;
 
-    const newPin: PhotoPin = {
-      id: 'pin_' + Date.now(),
-      xPercent: pendingPinCoord.x,
-      yPercent: pendingPinCoord.y,
+    const newPin: CadPin = {
+      id: 'photo_' + Date.now(),
+      type: 'photo',
+      worldX: pendingWorldCoord.x,
+      worldY: pendingWorldCoord.y,
       photoDataUrl: newPhotoData,
-      note: newPhotoNote.trim() || 'Foto de obra sin comentarios',
+      note: newPhotoNote.trim() || 'Foto de obra sin observaciones',
       author: userName,
       timestamp: new Date().toLocaleString()
     };
 
-    const updated = [...photoPins, newPin];
-    setPhotoPins(updated);
+    const updated = [...pins, newPin];
+    setPins(updated);
     savePinsToStorage(updated);
 
     setNewPhotoData(null);
-    setPendingPinCoord(null);
+    setPendingWorldCoord(null);
     setActiveTool('pan');
-    showToast('📍 ¡Foto de obra anclada al plano con éxito!');
+    showToast('📍 ¡Foto anclada exactamente a la geometría del plano!');
   };
 
-  const handleDeletePhotoPin = (pinId: string) => {
-    const updated = photoPins.filter(p => p.id !== pinId);
-    setPhotoPins(updated);
+  const handleSaveCommentPin = () => {
+    if (!newCommentNote.trim() || !pendingWorldCoord) return;
+
+    const newPin: CadPin = {
+      id: 'comment_' + Date.now(),
+      type: 'comment',
+      worldX: pendingWorldCoord.x,
+      worldY: pendingWorldCoord.y,
+      note: newCommentNote.trim(),
+      author: userName,
+      timestamp: new Date().toLocaleString()
+    };
+
+    const updated = [...pins, newPin];
+    setPins(updated);
+    savePinsToStorage(updated);
+
+    setIsCommentModalOpen(false);
+    setPendingWorldCoord(null);
+    setActiveTool('pan');
+    showToast('💬 ¡Comentario fijado al plano en coordenadas CAD!');
+  };
+
+  const handleDeletePin = (pinId: string) => {
+    const updated = pins.filter(p => p.id !== pinId);
+    setPins(updated);
     savePinsToStorage(updated);
     setSelectedPin(null);
-    showToast('Foto eliminada del plano.');
+    showToast('Marcador eliminado.');
   };
 
   // Filter layers
@@ -447,7 +557,7 @@ export default function App() {
           <p className="subtitle">
             {currentFileName 
               ? `Te han compartido el plano "${currentFileName}". Identifícate con tu nombre para comenzar la revisión.` 
-              : 'Visor y marcado de planos en obra compatible con celulares y tablets. Identifícate para registrar tus firmas y fotos.'}
+              : 'Visor y marcado de planos en obra compatible con celulares y computadoras. Identifícate para registrar tus firmas y fotos.'}
           </p>
           <form onSubmit={handleIdentify} className="welcome-form">
             <input 
@@ -504,6 +614,35 @@ export default function App() {
 
         {/* User status & quick actions */}
         <div className="header-actions">
+          {/* Background Theme Selector Dropdown */}
+          <div className="theme-selector-wrapper">
+            <button 
+              className="btn btn-ghost btn-sm theme-btn" 
+              onClick={() => setIsThemeMenuOpen(!isThemeMenuOpen)}
+              title="Cambiar color de fondo del plano"
+            >
+              🎨 {BG_THEMES.find(t => t.color === cadBgColor)?.icon}
+            </button>
+            {isThemeMenuOpen && (
+              <div className="theme-dropdown glass-panel">
+                <div className="theme-dropdown-header">Color de Fondo</div>
+                {BG_THEMES.map(theme => (
+                  <button 
+                    key={theme.id}
+                    className={`theme-option ${cadBgColor === theme.color ? 'active' : ''}`}
+                    onClick={() => {
+                      setCadBgColor(theme.color);
+                      setIsThemeMenuOpen(false);
+                    }}
+                  >
+                    <span>{theme.icon} {theme.label}</span>
+                    <div className="theme-color-preview" style={{ backgroundColor: theme.color }}></div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
           <span className="user-badge" title={`Conectado como ${userName}`}>
             <span className={`status-dot ${authenticated ? 'connected' : 'disconnected'}`}></span>
             <span className="user-badge-name">{userName}</span>
@@ -597,16 +736,26 @@ export default function App() {
                     📸 Captura PNG / Compartir por WhatsApp
                   </button>
                   <button className="drawer-item" onClick={() => { setIsMobileMenuOpen(false); setShowPins(!showPins); }}>
-                    {showPins ? '🕶️ Ocultar Fotos de Obra' : '👁️ Mostrar Fotos de Obra'} ({photoPins.length})
+                    {showPins ? '🕶️ Ocultar Fotos y Notas' : '👁️ Mostrar Fotos y Notas'} ({pins.length})
                   </button>
-                  <button className="drawer-item" onClick={() => {
-                    const themes = ['#0a0e1a', '#000000', '#f8fafc', '#1e293b'];
-                    const nextIdx = (themes.indexOf(cadBgColor) + 1) % themes.length;
-                    setCadBgColor(themes[nextIdx]);
-                    setIsMobileMenuOpen(false);
-                  }}>
-                    🎨 Cambiar Fondo (Negro/Oscuro/Blanco)
-                  </button>
+
+                  <div className="drawer-divider"></div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', padding: '4px 8px' }}>Color de Fondo:</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                    {BG_THEMES.map(theme => (
+                      <button 
+                        key={theme.id}
+                        className={`drawer-item ${cadBgColor === theme.color ? 'accent' : ''}`}
+                        style={{ padding: '8px 10px', fontSize: '0.78rem' }}
+                        onClick={() => {
+                          setCadBgColor(theme.color);
+                          setIsMobileMenuOpen(false);
+                        }}
+                      >
+                        {theme.icon} {theme.label}
+                      </button>
+                    ))}
+                  </div>
                 </>
               )}
 
@@ -636,11 +785,11 @@ export default function App() {
           <span className="file-name" title={currentFileName}>{currentFileName}</span>
           <span className="separator">|</span>
           <span className="user-tag">👷 {userName}</span>
-          {photoPins.length > 0 && (
+          {pins.length > 0 && (
             <>
               <span className="separator">|</span>
               <span className="photo-tag" onClick={() => setShowPins(!showPins)} style={{ cursor: 'pointer' }}>
-                📷 {photoPins.length} fotos
+                📍 {pins.filter(p => p.type === 'photo').length} fotos • {pins.filter(p => p.type === 'comment').length} notas
               </span>
             </>
           )}
@@ -651,7 +800,7 @@ export default function App() {
       <main 
         ref={viewerContainerRef} 
         className="viewer-container"
-        onClick={handleCanvasClickForPhoto}
+        onClick={handleCanvasClickForPin}
       >
         {/* Drag & Drop Overlay */}
         {isDraggingFile && (
@@ -670,14 +819,16 @@ export default function App() {
             <span>
               {activeTool === 'line' && '✏️ Modo Línea: Haz clic o arrastra para trazar marcas.'}
               {activeTool === 'circle' && '⭕ Modo Círculo: Haz clic para trazar círculos de revisión.'}
-              {activeTool === 'mtext' && '📝 Modo Texto: Haz clic en el plano para escribir anotaciones.'}
+              {activeTool === 'mtext' && '📝 Modo Texto CAD: Haz clic en el plano para escribir texto.'}
               {activeTool === 'dimension' && '📏 Modo Medición: Haz clic en dos puntos para acotar distancia.'}
-              {activeTool === 'photo' && '📷 Modo Foto: Toca el punto exacto del plano para tomar una foto.'}
+              {activeTool === 'revcloud' && '☁️ Modo Nube de Revisión: Dibuja la nube sobre la zona a auditar.'}
+              {activeTool === 'photo' && '📷 Modo Foto: Toca el punto exacto del plano para anexar foto de obra.'}
+              {activeTool === 'comment' && '💬 Modo Nota: Toca el punto del plano para insertar un comentario.'}
               {activeTool === 'zoom' && '🔍 Modo Zoom: Desliza o pellizca para acercar/alejar.'}
               {activeTool === 'select' && '👆 Modo Selección: Toca elementos para seleccionarlos.'}
             </span>
             <button className="btn-cancel-tool" onClick={handleCancelTool} title="Cancelar comando">
-              ✕ Cancelar (ESC)
+              ✕ Salir (ESC)
             </button>
           </div>
         )}
@@ -700,29 +851,34 @@ export default function App() {
               }}
             />
 
-            {/* Photo Pins Overlay Markers */}
-            {showPins && photoPins.map((pin) => (
-              <div 
-                key={pin.id}
-                className="photo-pin-marker"
-                style={{ left: `${pin.xPercent}%`, top: `${pin.yPercent}%` }}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setSelectedPin(pin);
-                }}
-                title={`Foto de ${pin.author}: ${pin.note}`}
-              >
-                <div className="pin-pulse"></div>
-                <div className="pin-icon">📷</div>
-              </div>
-            ))}
+            {/* WCS-Projected Interactive Pins (Photos and Comments) */}
+            {showPins && screenPins.map(({ pin, screenX, screenY, isVisible }) => {
+              if (!isVisible) return null;
+              return (
+                <div 
+                  key={pin.id}
+                  className={`cad-pin-marker ${pin.type}`}
+                  style={{ left: `${screenX}px`, top: `${screenY}px` }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSelectedPin(pin);
+                  }}
+                  title={`${pin.type === 'photo' ? 'Foto' : 'Nota'} de ${pin.author}: ${pin.note}`}
+                >
+                  <div className="pin-pulse"></div>
+                  <div className="pin-icon">
+                    {pin.type === 'photo' ? '📷' : '💬'}
+                  </div>
+                </div>
+              );
+            })}
           </>
         ) : (
           <div className="empty-state">
             <div className="empty-state-icon">📐</div>
             <h2>Visor CAD de Obra</h2>
             <p>
-              Abre tus planos DWG/DXF en segundos, mide distancias, agrega fotos geolocalizadas y exporta revisiones.
+              Abre planos DWG/DXF al instante, mide distancias, traza nubes de revisión, anexa fotos geolocalizadas y exporta tus marcas.
             </p>
             <div className="empty-state-actions">
               <button className="btn btn-accent" onClick={() => localFileInputRef.current?.click()}>
@@ -772,7 +928,7 @@ export default function App() {
             <button 
               className={`toolbar-btn ${activeTool === 'line' ? 'active' : ''}`} 
               onClick={() => handleToolChange('line')}
-              title="Trazar Línea / Marca"
+              title="Trazar Línea"
             >
               ✏️
             </button>
@@ -784,11 +940,11 @@ export default function App() {
               ⭕
             </button>
             <button 
-              className={`toolbar-btn ${activeTool === 'mtext' ? 'active' : ''}`} 
-              onClick={() => handleToolChange('mtext')}
-              title="Añadir Texto"
+              className={`toolbar-btn ${activeTool === 'revcloud' ? 'active' : ''}`} 
+              onClick={() => handleToolChange('revcloud')}
+              title="Nube de Revisión (REVCLOUD con capa metadata)"
             >
-              📝
+              ☁️
             </button>
             <button 
               className={`toolbar-btn ${activeTool === 'dimension' ? 'active' : ''}`} 
@@ -800,18 +956,29 @@ export default function App() {
 
             <div className="toolbar-divider"></div>
 
+            {/* Comment Pin Tool */}
+            <button 
+              className={`toolbar-btn ${activeTool === 'comment' ? 'active' : ''}`} 
+              onClick={() => handleToolChange('comment')}
+              title="Añadir Nota / Comentario en punto"
+            >
+              💬
+            </button>
+
             {/* Photo Pin Tool */}
             <button 
               className={`toolbar-btn ${activeTool === 'photo' ? 'active' : ''}`} 
               onClick={() => handleToolChange('photo')}
-              title="Anexar Foto de Obra en Punto"
+              title="Anexar Foto de Obra con Cámara"
               style={{ position: 'relative' }}
             >
               📷
-              {photoPins.length > 0 && (
-                <span className="toolbar-badge">{photoPins.length}</span>
+              {pins.length > 0 && (
+                <span className="toolbar-badge">{pins.length}</span>
               )}
             </button>
+
+            <div className="toolbar-divider"></div>
 
             {/* Layers Panel Toggle */}
             <button 
@@ -868,7 +1035,9 @@ export default function App() {
                     className="layer-color-swatch" 
                     style={{ backgroundColor: `#${layer.color.toString(16).padStart(6, '0')}` }} 
                   />
-                  <span className="layer-name" title={layer.name}>{layer.name}</span>
+                  <span className="layer-name" title={layer.name}>
+                    {layer.name.startsWith('REV_') ? `☁️ ${layer.name}` : layer.name}
+                  </span>
                   <button 
                     className={`layer-toggle ${layer.visible ? 'on' : ''}`}
                     onClick={() => cadRef.current?.toggleLayer(layer.name)}
@@ -889,11 +1058,11 @@ export default function App() {
 
       {/* Modal: New Photo Capture / Note */}
       {newPhotoData && (
-        <div className="modal-overlay" onClick={() => { setNewPhotoData(null); setPendingPinCoord(null); }}>
+        <div className="modal-overlay" onClick={() => { setNewPhotoData(null); setPendingWorldCoord(null); }}>
           <div className="modal-card glass-panel" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h3>📷 Anexar Foto de Obra</h3>
-              <button className="btn-icon btn-ghost" onClick={() => { setNewPhotoData(null); setPendingPinCoord(null); }}>✕</button>
+              <button className="btn-icon btn-ghost" onClick={() => { setNewPhotoData(null); setPendingWorldCoord(null); }}>✕</button>
             </div>
             <div className="modal-body">
               <div className="photo-preview-container">
@@ -911,11 +1080,11 @@ export default function App() {
                 />
               </div>
               <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 6 }}>
-                Registrado por: <strong>{userName}</strong> • {new Date().toLocaleTimeString()}
+                Coordenadas WCS: ({pendingWorldCoord?.x.toFixed(2)}, {pendingWorldCoord?.y.toFixed(2)}) • <strong>{userName}</strong>
               </div>
             </div>
             <div className="modal-footer">
-              <button className="btn btn-ghost" onClick={() => { setNewPhotoData(null); setPendingPinCoord(null); }}>
+              <button className="btn btn-ghost" onClick={() => { setNewPhotoData(null); setPendingWorldCoord(null); }}>
                 Cancelar
               </button>
               <button className="btn btn-accent" onClick={handleSavePhotoPin}>
@@ -926,39 +1095,82 @@ export default function App() {
         </div>
       )}
 
-      {/* Modal: View Photo Pin Details */}
+      {/* Modal: New Comment Note */}
+      {isCommentModalOpen && (
+        <div className="modal-overlay" onClick={() => { setIsCommentModalOpen(false); setPendingWorldCoord(null); }}>
+          <div className="modal-card glass-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>💬 Agregar Comentario / Nota de Obra</h3>
+              <button className="btn-icon btn-ghost" onClick={() => { setIsCommentModalOpen(false); setPendingWorldCoord(null); }}>✕</button>
+            </div>
+            <div className="modal-body">
+              <div className="form-group">
+                <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Comentario o Instrucción:</label>
+                <textarea 
+                  className="input-field" 
+                  rows={4} 
+                  placeholder="Ej: Modificar cota de antepecho a 1.10m según detalle de carpintería"
+                  value={newCommentNote}
+                  onChange={(e) => setNewCommentNote(e.target.value)}
+                  autoFocus
+                />
+              </div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 8 }}>
+                Autor: <strong>{userName}</strong> • {new Date().toLocaleTimeString()}
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-ghost" onClick={() => { setIsCommentModalOpen(false); setPendingWorldCoord(null); }}>
+                Cancelar
+              </button>
+              <button className="btn btn-accent" onClick={handleSaveCommentPin} disabled={!newCommentNote.trim()}>
+                💾 Fijar Comentario
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: View Pin Details (Photo or Comment) */}
       {selectedPin && (
         <div className="modal-overlay" onClick={() => setSelectedPin(null)}>
           <div className="modal-card glass-panel" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h3>📍 Foto de Obra</h3>
+              <h3>{selectedPin.type === 'photo' ? '📍 Foto de Obra' : '💬 Nota de Revisión'}</h3>
               <button className="btn-icon btn-ghost" onClick={() => setSelectedPin(null)}>✕</button>
             </div>
             <div className="modal-body">
-              <div className="photo-preview-container full">
-                <img src={selectedPin.photoDataUrl} alt="Foto de obra ampliada" className="photo-full-img" />
-              </div>
+              {selectedPin.type === 'photo' && selectedPin.photoDataUrl && (
+                <div className="photo-preview-container full">
+                  <img src={selectedPin.photoDataUrl} alt="Foto de obra ampliada" className="photo-full-img" />
+                </div>
+              )}
               <div className="photo-detail-info">
                 <p className="photo-note-text">{selectedPin.note}</p>
                 <div className="photo-meta">
                   <span>👷 <strong>{selectedPin.author}</strong></span>
                   <span>📅 {selectedPin.timestamp}</span>
                 </div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 4 }}>
+                  Posición WCS: ({selectedPin.worldX.toFixed(2)}, {selectedPin.worldY.toFixed(2)})
+                </div>
               </div>
             </div>
             <div className="modal-footer" style={{ justifyContent: 'space-between' }}>
-              <button className="btn btn-danger btn-sm" onClick={() => handleDeletePhotoPin(selectedPin.id)}>
+              <button className="btn btn-danger btn-sm" onClick={() => handleDeletePin(selectedPin.id)}>
                 🗑️ Eliminar
               </button>
               <div style={{ display: 'flex', gap: 8 }}>
-                <a 
-                  href={selectedPin.photoDataUrl} 
-                  download={`Foto_Obra_${selectedPin.id}.jpg`} 
-                  className="btn btn-ghost btn-sm"
-                  style={{ textDecoration: 'none' }}
-                >
-                  ⬇️ Descargar
-                </a>
+                {selectedPin.type === 'photo' && selectedPin.photoDataUrl && (
+                  <a 
+                    href={selectedPin.photoDataUrl} 
+                    download={`Foto_Obra_${selectedPin.id}.jpg`} 
+                    className="btn btn-ghost btn-sm"
+                    style={{ textDecoration: 'none' }}
+                  >
+                    ⬇️ Descargar Foto
+                  </a>
+                )}
                 <button className="btn btn-accent btn-sm" onClick={() => setSelectedPin(null)}>
                   Listo
                 </button>
