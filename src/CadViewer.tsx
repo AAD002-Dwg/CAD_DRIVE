@@ -57,7 +57,29 @@ function ensureDwgConverter() {
   }
 }
 
+function sanitizeDxfHeader(dxfText: string): string {
+  // Fix missing group codes for AutoCAD header variables
+  let fixed = dxfText;
+  fixed = fixed.replace(/(  9\r?\n\$ANGBASE\r?\n)(?=\s*9\r?\n)/g, '$1 50\r\n0.0\r\n');
+  fixed = fixed.replace(/(  9\r?\n\$ANGDIR\r?\n)(?=\s*9\r?\n)/g, '$1 70\r\n0\r\n');
+  fixed = fixed.replace(/(  9\r?\n\$AUNITS\r?\n)(?=\s*9\r?\n)/g, '$1 70\r\n0\r\n');
+  fixed = fixed.replace(/(  9\r?\n\$AUPREC\r?\n)(?=\s*9\r?\n)/g, '$1 70\r\n0\r\n');
+  fixed = fixed.replace(/(  9\r?\n\$UNITMODE\r?\n)(?=\s*9\r?\n)/g, '$1 70\r\n0\r\n');
+  fixed = fixed.replace(/(  9\r?\n\$MEASUREMENT\r?\n)(?=\s*9\r?\n)/g, '$1 70\r\n1\r\n');
+  fixed = fixed.replace(/(  9\r?\n\$INSUNITS\r?\n)(?=\s*9\r?\n)/g, '$1 70\r\n0\r\n');
+  fixed = fixed.replace(/(  9\r?\n\$LUNITS\r?\n)(?=\s*9\r?\n)/g, '$1 70\r\n2\r\n');
+  fixed = fixed.replace(/(  9\r?\n\$LUPREC\r?\n)(?=\s*9\r?\n)/g, '$1 70\r\n4\r\n');
+  fixed = fixed.replace(/(  9\r?\n\$LTSCALE\r?\n)(?=\s*9\r?\n)/g, '$1 40\r\n1.0\r\n');
+  fixed = fixed.replace(/(  9\r?\n\$CELTSCALE\r?\n)(?=\s*9\r?\n)/g, '$1 40\r\n1.0\r\n');
+  fixed = fixed.replace(/(  9\r?\n\$CMLSCALE\r?\n)(?=\s*9\r?\n)/g, '$1 40\r\n1.0\r\n');
+  fixed = fixed.replace(/(  9\r?\n\$TILEMODE\r?\n)(?=\s*9\r?\n)/g, '$1 70\r\n1\r\n');
+  fixed = fixed.replace(/(  9\r?\n\$PSLTSCALE\r?\n)(?=\s*9\r?\n)/g, '$1 70\r\n1\r\n');
+  fixed = fixed.replace(/(  9\r?\n\$LWDISPLAY\r?\n)(?=\s*9\r?\n)/g, '$1 70\r\n0\r\n');
+  return fixed;
+}
+
 export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, fileName, bgColor = '#111827', onLoaded, onError }, ref) => {
+
   const containerRef = useRef<HTMLDivElement>(null);
   const docManagerRef = useRef<AcApDocManager | null>(null);
   const [layers, setLayers] = useState<Array<{ name: string; color: number; visible: boolean }>>([]);
@@ -191,6 +213,20 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, f
     }
   };
 
+  // Sync background color with WebGL canvas
+  useEffect(() => {
+    if (!docManagerRef.current?.curView || !bgColor) return;
+    try {
+      const hex = bgColor.replace('#', '');
+      const colorNum = parseInt(hex, 16);
+      if (!isNaN(colorNum)) {
+        docManagerRef.current.curView.backgroundColor = colorNum;
+      }
+    } catch (e) {
+      console.warn('Error updating canvas background color:', e);
+    }
+  }, [bgColor]);
+
   useImperativeHandle(ref, () => ({
     zoomExtents: () => {
       if (!docManagerRef.current) return;
@@ -203,7 +239,6 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, f
     cancelCommand: () => {
       if (!docManagerRef.current) return;
       try {
-        // Send AutoCAD cancellation string
         docManagerRef.current.sendStringToExecute('^C^C');
       } catch (e) {
         console.error('Error cancelling command:', e);
@@ -245,9 +280,9 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, f
     createRevisionLayer: (layerName: string, colorIndex = 1) => {
       if (!docManagerRef.current?.curDocument) return;
       try {
-        // Create or switch to revision layer with specified color (1 = Red, 2 = Yellow, 3 = Green, 4 = Cyan, 6 = Magenta)
-        docManagerRef.current.sendStringToExecute(`-layer m ${layerName} c ${colorIndex} ${layerName}  `);
-        refreshLayers();
+        // Create or switch to revision layer with specified color
+        docManagerRef.current.sendStringToExecute(`-layer m "${layerName}" c ${colorIndex} "${layerName}"  `);
+        setTimeout(() => refreshLayers(), 300);
       } catch (e) {
         console.error('Error creating revision layer:', e);
       }
@@ -258,16 +293,30 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, f
         const doc = docManagerRef.current.curDocument;
         const db = doc.database as any;
         if (db && typeof db.dxfOut === 'function') {
-          const dxfOutResult = db.dxfOut(undefined, 6);
-          if (typeof dxfOutResult === 'string') {
-            const encoder = new TextEncoder();
-            const u8 = encoder.encode(dxfOutResult);
-            return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
-          } else if (dxfOutResult instanceof Uint8Array) {
-            return dxfOutResult.buffer.slice(dxfOutResult.byteOffset, dxfOutResult.byteOffset + dxfOutResult.byteLength) as ArrayBuffer;
-          } else if (dxfOutResult instanceof ArrayBuffer) {
-            return dxfOutResult;
-          }
+          // Initialize key system variables to prevent missing group codes in AutoCAD
+          if (db.angbase == null || isNaN(db.angbase)) db.angbase = 0;
+          if (db.angdir == null || isNaN(db.angdir)) db.angdir = 0;
+          if (db.aunits == null || isNaN(db.aunits)) db.aunits = 0;
+          if (db.auprec == null || isNaN(db.auprec)) db.auprec = 0;
+          if (db.insunits == null || isNaN(db.insunits)) db.insunits = 0;
+          if (db.lunits == null || isNaN(db.lunits)) db.lunits = 2;
+          if (db.luprec == null || isNaN(db.luprec)) db.luprec = 4;
+          if (db.unitmode == null || isNaN(db.unitmode)) db.unitmode = 0;
+          if (db.measurement == null || isNaN(db.measurement)) db.measurement = 1;
+          if (db.ltscale == null || isNaN(db.ltscale)) db.ltscale = 1;
+          if (db.celtscale == null || isNaN(db.celtscale)) db.celtscale = 1;
+          if (db.cmlscale == null || isNaN(db.cmlscale)) db.cmlscale = 1;
+
+          // Export using modern AutoCAD 2018 DXF dialect (AC1032) in ASCII format
+          const rawDxf = db.dxfOut(undefined, 6, 'AC1032', { format: 'ascii' });
+          let dxfStr = typeof rawDxf === 'string' ? rawDxf : new TextDecoder().decode(rawDxf);
+          
+          // Sanitize header to ensure 100% AutoCAD compliance
+          dxfStr = sanitizeDxfHeader(dxfStr);
+
+          const encoder = new TextEncoder();
+          const u8 = encoder.encode(dxfStr);
+          return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) as ArrayBuffer;
         }
       } catch (e) {
         console.error('Error exporting DXF via db.dxfOut:', e);
@@ -276,12 +325,14 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, f
     },
 
     screenToWorld: (screenX: number, screenY: number) => {
-      if (!docManagerRef.current?.curDocument) return null;
+      if (!docManagerRef.current) return null;
       try {
-        const view = (docManagerRef.current.curDocument as any).view;
+        const view = docManagerRef.current.curView || (docManagerRef.current.curDocument as any)?.view;
         if (view && typeof view.screenToWorld === 'function') {
           const pt = view.screenToWorld({ x: screenX, y: screenY });
-          return { x: pt.x, y: pt.y };
+          if (pt && typeof pt.x === 'number' && typeof pt.y === 'number' && !isNaN(pt.x) && !isNaN(pt.y)) {
+            return { x: pt.x, y: pt.y };
+          }
         }
       } catch (e) {
         console.error('Error in screenToWorld:', e);
@@ -289,12 +340,14 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, f
       return null;
     },
     worldToScreen: (worldX: number, worldY: number) => {
-      if (!docManagerRef.current?.curDocument) return null;
+      if (!docManagerRef.current) return null;
       try {
-        const view = (docManagerRef.current.curDocument as any).view;
+        const view = docManagerRef.current.curView || (docManagerRef.current.curDocument as any)?.view;
         if (view && typeof view.worldToScreen === 'function') {
           const pt = view.worldToScreen({ x: worldX, y: worldY });
-          return { x: pt.x, y: pt.y };
+          if (pt && typeof pt.x === 'number' && typeof pt.y === 'number' && !isNaN(pt.x) && !isNaN(pt.y)) {
+            return { x: pt.x, y: pt.y };
+          }
         }
       } catch (e) {
         console.error('Error in worldToScreen:', e);
@@ -357,6 +410,7 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({ fileData, f
       return containerRef.current?.querySelector('canvas') || null;
     }
   }));
+
 
 
   return (
