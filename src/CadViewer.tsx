@@ -58,82 +58,87 @@ function ensureDwgConverter() {
 }
 
 function sanitizeDxfHeader(dxfText: string): string {
-  const lines = dxfText.split(/\r?\n/);
-  const result: string[] = [];
-  let inHeader = false;
-  let i = 0;
+  const headerStart = dxfText.search(/0\r?\nSECTION\r?\n2\r?\nHEADER/);
+  if (headerStart === -1) return dxfText;
 
-  while (i < lines.length) {
-    const line = lines[i];
-    const nextLine = lines[i + 1];
+  const endSecMatch = dxfText.substring(headerStart).search(/0\r?\nENDSEC/);
+  if (endSecMatch === -1) return dxfText;
 
-    if (line.trim() === 'HEADER' && lines[i - 1]?.trim() === '2') {
-      inHeader = true;
-    }
+  const headerEnd = headerStart + endSecMatch;
+  const endSecFullMatch = dxfText.substring(headerEnd).match(/^0\r?\nENDSEC\r?\n/);
+  const skipLen = endSecFullMatch ? endSecFullMatch[0].length : 8;
 
-    if (inHeader && line.trim() === 'ENDSEC' && lines[i - 1]?.trim() === '0') {
-      inHeader = false;
-    }
+  // Extract drawing version or default to modern AutoCAD 2018 (AC1032)
+  const verMatch = dxfText.match(/9\r?\n\$ACADVER\r?\n1\r?\n([^\r\n]+)/);
+  const acadVer = verMatch ? verMatch[1].trim() : 'AC1032';
 
-    if (inHeader && line.trim() === '9') {
-      const varName = nextLine ? nextLine.trim() : '';
+  // Extract handseed if available
+  const handseedMatch = dxfText.match(/9\r?\n\$HANDSEED\r?\n5\r?\n([^\r\n]+)/);
+  const handseed = handseedMatch ? handseedMatch[1].trim() : 'FFFF';
 
-      // Remove non-standard header variables that cause AutoCAD parser errors / warnings
-      if (['$CMLEADERSTYLE', '$HPCOLOR', '$HPBACKGROUNDCOLOR', '$HPLAYER', '$HPTRANSPARENCY'].includes(varName)) {
-        i += 2;
-        // Skip associated value group code and value if present
-        if (i < lines.length && lines[i].trim() !== '9' && lines[i].trim() !== '0') {
-          i += 2;
-        }
-        continue;
-      }
+  // Standard, 100% compliant AutoCAD DXF header without unsupported or malformed variables
+  const standardHeader = [
+    '0', 'SECTION',
+    '2', 'HEADER',
+    '9', '$ACADVER',
+    '1', acadVer,
+    '9', '$HANDSEED',
+    '5', handseed,
+    '9', '$DWGCODEPAGE',
+    '3', 'UTF-8',
+    '9', '$INSUNITS',
+    '70', '0',
+    '9', '$LUNITS',
+    '70', '2',
+    '9', '$LUPREC',
+    '70', '4',
+    '9', '$UNITMODE',
+    '70', '0',
+    '9', '$MEASUREMENT',
+    '70', '1',
+    '9', '$LTSCALE',
+    '40', '1.0',
+    '9', '$CELTSCALE',
+    '40', '1.0',
+    '9', '$CECOLOR',
+    '62', '256',
+    '9', '$CLAYER',
+    '8', '0',
+    '9', '$CELTYPE',
+    '6', 'ByLayer',
+    '9', '$TEXTSTYLE',
+    '7', 'Standard',
+    '9', '$DIMSTYLE',
+    '2', 'Standard',
+    '9', '$ANGBASE',
+    '50', '0.0',
+    '9', '$ANGDIR',
+    '70', '0',
+    '9', '$AUNITS',
+    '70', '0',
+    '9', '$AUPREC',
+    '70', '0',
+    '9', '$EXTMIN',
+    '10', '-10000.0',
+    '20', '-10000.0',
+    '30', '0.0',
+    '9', '$EXTMAX',
+    '10', '10000.0',
+    '20', '10000.0',
+    '30', '0.0',
+    '9', '$PDMODE',
+    '70', '0',
+    '9', '$PDSIZE',
+    '40', '0.0',
+    '9', '$OSMODE',
+    '70', '0',
+    '9', '$ORTHOMODE',
+    '70', '0',
+    '0', 'ENDSEC'
+  ].join('\r\n');
 
-      // Ensure $EXTMIN has valid 10, 20, 30 coordinates
-      if (varName === '$EXTMIN') {
-        result.push('9', '$EXTMIN');
-        i += 2;
-        if (lines[i]?.trim() !== '10') {
-          result.push('10', '0.0', '20', '0.0', '30', '0.0');
-        }
-        continue;
-      }
-
-      // Ensure $EXTMAX has valid 10, 20, 30 coordinates
-      if (varName === '$EXTMAX') {
-        result.push('9', '$EXTMAX');
-        i += 2;
-        if (lines[i]?.trim() !== '10') {
-          result.push('10', '1000.0', '20', '1000.0', '30', '0.0');
-        }
-        continue;
-      }
-
-      // Ensure $CECOLOR has valid color code
-      if (varName === '$CECOLOR') {
-        result.push('9', '$CECOLOR');
-        i += 2;
-        if (lines[i]?.trim() !== '62' && lines[i]?.trim() !== '420') {
-          result.push('62', '256');
-        }
-        continue;
-      }
-
-      // Ensure $ANGBASE has valid angle code
-      if (varName === '$ANGBASE') {
-        result.push('9', '$ANGBASE');
-        i += 2;
-        if (lines[i]?.trim() !== '50') {
-          result.push('50', '0.0');
-        }
-        continue;
-      }
-    }
-
-    result.push(line);
-    i++;
-  }
-
-  return result.join('\r\n');
+  const restOfDxf = dxfText.substring(headerEnd + skipLen).replace(/\r?\n/g, '\r\n');
+  return standardHeader + '\r\n' + restOfDxf;
 }
 
 
