@@ -24,14 +24,10 @@ export interface AuthUser {
   displayName: string;   // Nombre real de Google
   email: string;         // Email verificado por Google
   photoURL: string | null;
-  accessToken: string | null; // Token OAuth para Google Drive (si se otorgó)
 }
 
 const provider = new GoogleAuthProvider();
-// Solicitar scope de Drive además del login básico
-provider.addScope('https://www.googleapis.com/auth/drive.file');
-provider.addScope('https://www.googleapis.com/auth/drive.readonly');
-// Para forzar selección de cuenta siempre (evita auto-login silencioso)
+// Solo autenticación de identidad para la app (no pide scopes sensibles)
 provider.setCustomParameters({ prompt: 'select_account' });
 
 export function useAuth() {
@@ -43,27 +39,14 @@ export function useAuth() {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser: User | null) => {
       if (firebaseUser) {
-        // Obtener Access Token de Google para las APIs de Drive
-        let accessToken: string | null = null;
-        try {
-          // getIdToken refresca el token si está expirado
-          await (firebaseUser as any).getIdTokenResult();
-          // El access token de Google Drive se guarda en localStorage para persistir entre pestañas y recargas
-          accessToken = localStorage.getItem('gd_access_token');
-        } catch {
-          accessToken = null;
-        }
-
         setUser({
           uid: firebaseUser.uid,
           displayName: firebaseUser.displayName || firebaseUser.email || 'Usuario',
           email: firebaseUser.email || '',
           photoURL: firebaseUser.photoURL,
-          accessToken,
         });
       } else {
         setUser(null);
-        localStorage.removeItem('gd_access_token');
       }
       setLoading(false);
     });
@@ -75,14 +58,7 @@ export function useAuth() {
     setError(null);
     setLoading(true);
     try {
-      const result = await signInWithPopup(auth, provider);
-      // Extraer el Access Token de Google para Drive API
-      const credential = GoogleAuthProvider.credentialFromResult(result);
-      if (credential?.accessToken) {
-        localStorage.setItem('gd_access_token', credential.accessToken);
-        // Actualizar el usuario con el access token
-        setUser(prev => prev ? { ...prev, accessToken: credential.accessToken! } : null);
-      }
+      await signInWithPopup(auth, provider);
     } catch (err: any) {
       // Códigos de error comunes de Firebase Auth
       if (err.code === 'auth/popup-closed-by-user') {
@@ -103,7 +79,6 @@ export function useAuth() {
   const signOutUser = useCallback(async () => {
     try {
       await signOut(auth);
-      localStorage.removeItem('gd_access_token');
     } catch (err) {
       console.error('[useAuth] Error al cerrar sesión:', err);
     }

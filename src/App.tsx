@@ -32,9 +32,9 @@ export default function App() {
   // El nombre del usuario viene de Google (verificado), no de un input libre
   const userName = user?.displayName || '';
 
-  // === GOOGLE DRIVE (token viene del auth de Firebase) ===
-  const { ready, openPicker, downloadFile, uploadDxf } = useGoogleDrive(user?.accessToken ?? null);
-  const authenticated = isAuthenticated && !!user?.accessToken;
+  // === GOOGLE DRIVE (Google Identity Services con sync-cad-storage) ===
+  const { ready: driveReady, authenticated: driveAuthenticated, openPicker, downloadFile, uploadDxf } = useGoogleDrive(user?.email);
+  const authenticated = driveAuthenticated;
   
   const [currentFileId, setCurrentFileId] = useState<string | null>(null);
   const [currentFileName, setCurrentFileName] = useState<string | null>(null);
@@ -827,16 +827,9 @@ export default function App() {
 
           {/* Desktop Direct Actions */}
           <div className="desktop-actions">
-            {/* Con Firebase Auth el mismo token OAuth sirve para Drive */}
-            {authenticated ? (
-              <button className="btn btn-ghost btn-sm" onClick={handlePickDriveFile} title="Abrir desde Google Drive" disabled={!ready}>
-                📂 Drive
-              </button>
-            ) : (
-              <button className="btn btn-ghost btn-sm" onClick={signInWithGoogle} title="Hacé clic para reconectar con Google Drive">
-                🔄 Conectar Drive
-              </button>
-            )}
+            <button className="btn btn-ghost btn-sm" onClick={handlePickDriveFile} title="Abrir desde Google Drive" disabled={!driveReady}>
+              📂 Drive
+            </button>
 
             <button className="btn btn-ghost btn-sm" onClick={() => localFileInputRef.current?.click()} title="Abrir archivo desde este equipo">
               💻 Abrir Local
@@ -903,15 +896,9 @@ export default function App() {
                 💻 Abrir Archivo Local (.dwg / .dxf)
               </button>
               
-              {authenticated ? (
-                <button className="drawer-item" onClick={handlePickDriveFile}>
-                  📂 Abrir Plano desde Google Drive
-                </button>
-              ) : (
-                <button className="drawer-item accent" onClick={() => { setIsMobileMenuOpen(false); signInWithGoogle(); }}>
-                  🔄 Conectar con Google Drive
-                </button>
-              )}
+              <button className="drawer-item" onClick={handlePickDriveFile}>
+                📂 Abrir Plano desde Google Drive
+              </button>
 
               {fileBuffer && (
                 <>
@@ -1102,15 +1089,9 @@ export default function App() {
               <button className="btn btn-accent" onClick={() => localFileInputRef.current?.click()}>
                 💻 Abrir Plano Local (DWG / DXF)
               </button>
-              {authenticated ? (
-                <button className="btn btn-ghost" onClick={handlePickDriveFile} disabled={!ready}>
-                  📂 Seleccionar de Google Drive
-                </button>
-              ) : (
-                <button className="btn btn-ghost" onClick={signInWithGoogle} title="Conectar con Google Drive">
-                  🔄 Conectar con Google Drive
-                </button>
-              )}
+              <button className="btn btn-ghost" onClick={handlePickDriveFile} disabled={!driveReady}>
+                📂 Seleccionar de Google Drive
+              </button>
             </div>
             <p className="drag-hint">O arrastra y suelta tu archivo DWG/DXF aquí</p>
           </div>
