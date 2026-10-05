@@ -125,6 +125,7 @@ export default function App() {
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const viewerContainerRef = useRef<HTMLDivElement>(null);
   const animFrameRef = useRef<number | null>(null);
+  const attemptedFileIdRef = useRef<string | null>(null);
 
   // La colaboracion en tiempo real ahora se gestiona en useRealtimeCollaboration
   // (Firebase Realtime Database) — el hook ya esta inicializado arriba
@@ -219,22 +220,26 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     const sharedFileId = params.get('fileId');
 
-    if (sharedFileId && authenticated && !fileBuffer && !isLoading) {
-      const loadSharedFile = async () => {
-        setIsLoading(true);
-        setLoadingMsg(`Cargando plano compartido (${currentFileName})...`);
-        const buffer = await downloadFile(sharedFileId);
-        if (buffer) {
-          setFileBuffer(buffer);
-          showToast(`Plano ${currentFileName} cargado exitosamente.`);
-        } else {
-          showToast('No se pudo descargar el plano. Verifica permisos de acceso.');
-        }
-        setIsLoading(false);
-      };
-      loadSharedFile();
-    }
-  }, [authenticated, downloadFile, currentFileName, fileBuffer, isLoading, showToast]);
+    if (!sharedFileId || !authenticated) return;
+    if (attemptedFileIdRef.current === sharedFileId) return;
+
+    attemptedFileIdRef.current = sharedFileId;
+
+    const loadSharedFile = async () => {
+      setIsLoading(true);
+      setLoadingMsg(`Cargando plano compartido (${currentFileName || 'DWG'})...`);
+      const buffer = await downloadFile(sharedFileId);
+      if (buffer) {
+        setFileBuffer(buffer);
+        showToast(`Plano cargado exitosamente.`);
+      } else {
+        showToast('No se pudo descargar el plano. Verifica permisos de acceso en Drive.');
+      }
+      setIsLoading(false);
+    };
+
+    loadSharedFile();
+  }, [authenticated, downloadFile, currentFileName, showToast]);
 
   const handlePickDriveFile = () => {
     setIsMobileMenuOpen(false);
@@ -828,8 +833,8 @@ export default function App() {
                 📂 Drive
               </button>
             ) : (
-              <button className="btn btn-ghost btn-sm" disabled title="Reconectando con Drive...">
-                🔄 Drive
+              <button className="btn btn-ghost btn-sm" onClick={signInWithGoogle} title="Hacé clic para reconectar con Google Drive">
+                🔄 Conectar Drive
               </button>
             )}
 
@@ -903,8 +908,8 @@ export default function App() {
                   📂 Abrir Plano desde Google Drive
                 </button>
               ) : (
-                <button className="drawer-item" disabled style={{ opacity: 0.5 }}>
-                  🔄 Reconectando con Drive...
+                <button className="drawer-item accent" onClick={() => { setIsMobileMenuOpen(false); signInWithGoogle(); }}>
+                  🔄 Conectar con Google Drive
                 </button>
               )}
 
@@ -1102,8 +1107,8 @@ export default function App() {
                   📂 Seleccionar de Google Drive
                 </button>
               ) : (
-                <button className="btn btn-ghost" disabled>
-                  🔄 Drive (reconectando...)
+                <button className="btn btn-ghost" onClick={signInWithGoogle} title="Conectar con Google Drive">
+                  🔄 Conectar con Google Drive
                 </button>
               )}
             </div>

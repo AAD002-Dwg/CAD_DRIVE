@@ -67,22 +67,24 @@ export function useGoogleDrive(accessToken: string | null) {
 
   const downloadFile = useCallback(async (fileId: string): Promise<ArrayBuffer | null> => {
     try {
-      const url = accessToken
-        ? `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`
-        : `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${API_KEY}`;
-
-      const headers: Record<string, string> = {};
-      if (accessToken) {
-        headers['Authorization'] = `Bearer ${accessToken}`;
+      if (!accessToken) {
+        console.warn('[useGoogleDrive] No hay accessToken para descargar desde Drive. Se requiere reconectar.');
+        return null;
       }
 
-      const response = await fetch(url, { headers });
+      const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+      const response = await fetch(url, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+
       if (!response.ok) {
-        throw new Error(`Error al descargar archivo: ${response.status} ${response.statusText}`);
+        const errorDetails = await response.text().catch(() => '');
+        console.error(`[useGoogleDrive] Error descargando archivo (${response.status}):`, errorDetails);
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
       return await response.arrayBuffer();
     } catch (error) {
-      console.error('[useGoogleDrive] Error descargando archivo:', error);
+      console.error('[useGoogleDrive] Error en downloadFile:', error);
       return null;
     }
   }, [accessToken]);
