@@ -177,6 +177,33 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({
     }
   };
 
+  // Tune camera controls for smooth, controlled touch zoom and panning
+  const tuneCameraControls = () => {
+    if (!docManagerRef.current) return;
+    try {
+      const curDoc = docManagerRef.current.curDocument as any;
+      const view = (docManagerRef.current.curView || curDoc?.view) as any;
+      if (!view) return;
+
+      const adjust = (controls: any) => {
+        if (!controls) return;
+        // Default in mlightcad is 5, which makes mobile pinch-zoom jump excessively!
+        // 0.8 provides a smooth, tactile, and precise zoom experience on mobile touch screens
+        controls.zoomSpeed = 0.8;
+      };
+
+      if (view._layoutViewManager?._layoutViews) {
+        view._layoutViewManager._layoutViews.forEach((lv: any) => {
+          adjust(lv?._cameraControls);
+        });
+      }
+      adjust(view.activeLayoutView?._cameraControls);
+      adjust(view._cameraControls);
+    } catch (e) {
+      console.warn('Error tuning camera controls:', e);
+    }
+  };
+
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -212,8 +239,15 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({
 
         if (success) {
           suppressAxes();
-          setTimeout(suppressAxes, 300);
-          setTimeout(suppressAxes, 1200);
+          tuneCameraControls();
+          setTimeout(() => {
+            suppressAxes();
+            tuneCameraControls();
+          }, 300);
+          setTimeout(() => {
+            suppressAxes();
+            tuneCameraControls();
+          }, 1200);
           if (onLoaded) onLoaded();
           refreshLayers();
           refreshLayouts();
@@ -319,58 +353,6 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({
     }
   }, [bgColor]);
 
-  // Two-finger touch rotation gesture detection
-  const initialTouchAngleRef = useRef<number | null>(null);
-  const initialRotationRef = useRef<number>(0);
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-
-    const getTouchAngle = (touches: TouchList) => {
-      const t1 = touches[0];
-      const t2 = touches[1];
-      return Math.atan2(t2.clientY - t1.clientY, t2.clientX - t1.clientX) * (180 / Math.PI);
-    };
-
-    const handleTouchStart = (e: TouchEvent) => {
-      if (e.touches.length === 2) {
-        initialTouchAngleRef.current = getTouchAngle(e.touches);
-        initialRotationRef.current = localRotation;
-      }
-    };
-
-    const handleTouchMove = (e: TouchEvent) => {
-      if (e.touches.length === 2 && initialTouchAngleRef.current !== null) {
-        const currentAngle = getTouchAngle(e.touches);
-        const delta = currentAngle - initialTouchAngleRef.current;
-        // Avoid tiny unintended finger twitches
-        if (Math.abs(delta) > 4) {
-          const newRot = Math.round(((initialRotationRef.current + delta) % 360 + 360) % 360);
-          setLocalRotation(newRot);
-          applyRotationToCamera(newRot);
-          if (onRotationChange) onRotationChange(newRot);
-        }
-      }
-    };
-
-    const handleTouchEnd = (e: TouchEvent) => {
-      if (e.touches.length < 2) {
-        initialTouchAngleRef.current = null;
-      }
-    };
-
-    el.addEventListener('touchstart', handleTouchStart, { passive: true });
-    el.addEventListener('touchmove', handleTouchMove, { passive: true });
-    el.addEventListener('touchend', handleTouchEnd, { passive: true });
-
-    return () => {
-      el.removeEventListener('touchstart', handleTouchStart);
-      el.removeEventListener('touchmove', handleTouchMove);
-      el.removeEventListener('touchend', handleTouchEnd);
-    };
-  }, [localRotation, onRotationChange]);
-
   useImperativeHandle(ref, () => ({
     zoomExtents: () => {
       if (!docManagerRef.current) return;
@@ -416,29 +398,29 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({
       try {
         switch (tool) {
           case 'pan':
-            docManagerRef.current.sendStringToExecute('pan\n');
+            docManagerRef.current.sendStringToExecute('pan');
             break;
           case 'zoom':
-            docManagerRef.current.sendStringToExecute('zoom\n');
+            docManagerRef.current.sendStringToExecute('zoom');
             break;
           case 'select':
-            docManagerRef.current.sendStringToExecute('select\n');
+            docManagerRef.current.sendStringToExecute('select');
             break;
           case 'line':
-            docManagerRef.current.sendStringToExecute('line\n');
+            docManagerRef.current.sendStringToExecute('line');
             break;
           case 'circle':
-            docManagerRef.current.sendStringToExecute('circle\n');
+            docManagerRef.current.sendStringToExecute('circle');
             break;
           case 'mtext':
-            docManagerRef.current.sendStringToExecute('mtext\n');
+            docManagerRef.current.sendStringToExecute('mtext');
             break;
           case 'dimension':
-            // High-precision distance measurement tool (dist)
-            docManagerRef.current.sendStringToExecute('dist\n');
+            // In mlightcad, 'dimlinear' creates linear dimension entities interactively
+            docManagerRef.current.sendStringToExecute('dimlinear');
             break;
           case 'revcloud':
-            docManagerRef.current.sendStringToExecute('revcloud\n');
+            docManagerRef.current.sendStringToExecute('revcloud');
             break;
         }
       } catch (e) {
@@ -530,8 +512,14 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({
       try {
         setActiveLayout(layoutName);
         docManagerRef.current.sendStringToExecute(`ctab ${layoutName}`);
-        setTimeout(suppressAxes, 100);
-        setTimeout(suppressAxes, 400);
+        setTimeout(() => {
+          suppressAxes();
+          tuneCameraControls();
+        }, 100);
+        setTimeout(() => {
+          suppressAxes();
+          tuneCameraControls();
+        }, 400);
         if (localRotation !== 0) {
           setTimeout(() => applyRotationToCamera(localRotation), 250);
         }
