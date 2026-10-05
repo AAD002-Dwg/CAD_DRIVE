@@ -33,7 +33,7 @@ export default function App() {
   const userName = user?.displayName || '';
 
   // === GOOGLE DRIVE (Google Identity Services con sync-cad-storage) ===
-  const { ready: driveReady, authenticated: driveAuthenticated, openPicker, connectDrive, downloadFile, uploadDxf } = useGoogleDrive(user?.email);
+  const { ready: driveReady, authenticated: driveAuthenticated, openPicker, downloadFile, uploadDxf } = useGoogleDrive(user?.email);
   const authenticated = driveAuthenticated;
   
   const [currentFileId, setCurrentFileId] = useState<string | null>(null);
@@ -215,43 +215,34 @@ export default function App() {
   }, [pins, peers, peerCursors]);
 
 
-  // Descargar plano compartido (manualmente o al autenticarse en Drive)
+  // Descargar plano compartido (directamente con API Key si es público o con token si está autenticado)
   const handleLoadSharedFile = useCallback(async () => {
-    if (!currentFileId) return;
+    const fileIdToLoad = currentFileId || new URLSearchParams(window.location.search).get('fileId');
+    if (!fileIdToLoad) return;
 
-    const doDownload = async () => {
-      setIsLoading(true);
-      setLoadingMsg(`Cargando plano compartido (${currentFileName || 'DWG'})...`);
-      const buffer = await downloadFile(currentFileId);
-      if (buffer) {
-        setFileBuffer(buffer);
-        showToast(`Plano ${currentFileName || ''} cargado exitosamente.`);
-      } else {
-        showToast('⚠️ Error 404: El plano no fue encontrado o es privado. El dueño del archivo debe configurarlo en Drive como "Cualquier persona que tenga el vínculo".');
-      }
-      setIsLoading(false);
-    };
-
-    if (!authenticated) {
-      connectDrive(() => {
-        doDownload();
-      });
+    setIsLoading(true);
+    setLoadingMsg(`Cargando plano compartido (${currentFileName || 'DWG'})...`);
+    const buffer = await downloadFile(fileIdToLoad);
+    if (buffer) {
+      setFileBuffer(buffer);
+      showToast(`Plano cargado exitosamente.`);
     } else {
-      doDownload();
+      showToast('⚠️ No se pudo descargar el plano (Error 404). El dueño del archivo debe configurarlo en Drive como "Cualquier persona que tenga el vínculo".');
     }
-  }, [currentFileId, currentFileName, authenticated, downloadFile, connectDrive, showToast]);
+    setIsLoading(false);
+  }, [currentFileId, currentFileName, downloadFile, showToast]);
 
-  // Auto-download file if shared URL parameter is present and already authenticated
+  // Auto-download file if shared URL parameter is present
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const sharedFileId = params.get('fileId');
 
-    if (!sharedFileId || !authenticated) return;
+    if (!sharedFileId || fileBuffer) return;
     if (attemptedFileIdRef.current === sharedFileId) return;
 
     attemptedFileIdRef.current = sharedFileId;
     handleLoadSharedFile();
-  }, [authenticated, handleLoadSharedFile]);
+  }, [fileBuffer, handleLoadSharedFile]);
 
   const handlePickDriveFile = () => {
     setIsMobileMenuOpen(false);
@@ -1109,7 +1100,7 @@ export default function App() {
                   {currentFileName || 'Plano de obra'}
                 </p>
                 <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '20px', lineHeight: 1.5 }}>
-                  Te uniste a la sala colaborativa. Hacé clic abajo para cargar el archivo desde Google Drive.
+                  Te uniste a la sala colaborativa. Si no se cargó automáticamente, hacé clic abajo para reintentar la descarga.
                 </p>
                 <button 
                   className="btn btn-accent" 
@@ -1117,7 +1108,7 @@ export default function App() {
                   disabled={isLoading}
                   style={{ width: '100%', justifyContent: 'center' }}
                 >
-                  📥 Cargar Plano desde Drive
+                  🔄 Reintentar Carga del Plano
                 </button>
               </div>
             ) : (

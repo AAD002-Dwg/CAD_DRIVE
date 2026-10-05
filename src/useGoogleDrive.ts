@@ -142,20 +142,21 @@ export function useGoogleDrive(userEmail?: string | null) {
 
   const downloadFile = useCallback(async (fileId: string): Promise<ArrayBuffer | null> => {
     try {
-      if (!accessToken) {
-        console.warn('[useGoogleDrive] No hay token de Drive para descargar.');
-        return null;
+      const url = accessToken
+        ? `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`
+        : `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${API_KEY}&supportsAllDrives=true`;
+
+      const headers: Record<string, string> = {};
+      if (accessToken) {
+        headers['Authorization'] = `Bearer ${accessToken}`;
       }
 
-      const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`;
-      const response = await fetch(url, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
+      const response = await fetch(url, { headers });
 
       if (!response.ok) {
         const errorDetails = await response.text().catch(() => '');
         console.error(`[useGoogleDrive] Error descargando archivo (${response.status}):`, errorDetails);
-        if (response.status === 401) {
+        if (response.status === 401 && accessToken) {
           // Token expirado, limpiar para forzar reconexión limpia
           setAccessToken(null);
           localStorage.removeItem('gd_drive_token');
