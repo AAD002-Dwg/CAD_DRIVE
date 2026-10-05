@@ -60,6 +60,12 @@ interface UseRealtimeCollaborationOptions {
   onToast?: (msg: string) => void;
 }
 
+function sanitizeRoomId(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  // Firebase Realtime Database no permite los caracteres '.', '#', '$', '[', ']', '/'
+  return raw.replace(/[.#$[\]/]/g, '_');
+}
+
 export function useRealtimeCollaboration({
   roomId,
   currentUser,
@@ -67,6 +73,7 @@ export function useRealtimeCollaboration({
   onPinDeleted,
   onToast,
 }: UseRealtimeCollaborationOptions) {
+  const safeRoomId = sanitizeRoomId(roomId);
   const [peers, setPeers] = useState<PeerUser[]>([]);
   const [peerCursors, setPeerCursors] = useState<Map<string, { worldX: number; worldY: number }>>(new Map());
   const [isConnected, setIsConnected] = useState(false);
@@ -84,17 +91,17 @@ export function useRealtimeCollaboration({
   const userColor = currentUser ? getUserColor(currentUser.uid) : '#6366f1';
 
   useEffect(() => {
-    if (!roomId || !currentUser) {
+    if (!safeRoomId || !currentUser) {
       cleanup();
       return;
     }
 
     const uid = currentUser.uid;
-    const presenceDbRef = ref(database, `rooms/${roomId}/presence/${uid}`);
-    const cursorDbRef = ref(database, `rooms/${roomId}/cursors/${uid}`);
-    const allPresenceRef = ref(database, `rooms/${roomId}/presence`);
-    const allCursorsRef = ref(database, `rooms/${roomId}/cursors`);
-    const pinsRef = ref(database, `rooms/${roomId}/pins`);
+    const presenceDbRef = ref(database, `rooms/${safeRoomId}/presence/${uid}`);
+    const cursorDbRef = ref(database, `rooms/${safeRoomId}/cursors/${uid}`);
+    const allPresenceRef = ref(database, `rooms/${safeRoomId}/presence`);
+    const allCursorsRef = ref(database, `rooms/${safeRoomId}/cursors`);
+    const pinsRef = ref(database, `rooms/${safeRoomId}/pins`);
 
     myPresenceDbRef.current = presenceDbRef;
     myCursorDbRef.current = cursorDbRef;
@@ -214,26 +221,26 @@ export function useRealtimeCollaboration({
 
   // Enviar posición del cursor (throttled)
   const sendCursor = useCallback((worldX: number, worldY: number) => {
-    if (!roomId || !currentUser || !myCursorDbRef.current) return;
+    if (!safeRoomId || !currentUser || !myCursorDbRef.current) return;
     const now = Date.now();
     if (now - lastCursorSent.current < 80) return; // max 12fps
     lastCursorSent.current = now;
     set(myCursorDbRef.current, { x: worldX, y: worldY, ts: now });
-  }, [roomId, currentUser]);
+  }, [safeRoomId, currentUser]);
 
   // Compartir un pin nuevo
   const broadcastPin = useCallback((pin: CadPin) => {
-    if (!roomId || !currentUser) return;
-    const pinRef = ref(database, `rooms/${roomId}/pins/${pin.id}`);
+    if (!safeRoomId || !currentUser) return;
+    const pinRef = ref(database, `rooms/${safeRoomId}/pins/${pin.id}`);
     set(pinRef, pin);
-  }, [roomId, currentUser]);
+  }, [safeRoomId, currentUser]);
 
   // Eliminar un pin compartido
   const broadcastDeletePin = useCallback((pinId: string) => {
-    if (!roomId || !currentUser) return;
-    const pinRef = ref(database, `rooms/${roomId}/pins/${pinId}`);
+    if (!safeRoomId || !currentUser) return;
+    const pinRef = ref(database, `rooms/${safeRoomId}/pins/${pinId}`);
     remove(pinRef);
-  }, [roomId, currentUser]);
+  }, [safeRoomId, currentUser]);
 
   return {
     peers,
