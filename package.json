@@ -25,6 +25,7 @@
     "@mlightcad/pdf-renderer": "^1.7.3",
     "@mlightcad/three-renderer": "^1.7.3",
     "@velipso/polybool": "^1.1.1",
+    "firebase": "^12.19.0",
     "lodash-es": "^4.17.21",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

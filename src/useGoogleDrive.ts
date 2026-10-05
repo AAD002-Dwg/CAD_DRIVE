@@ -1,24 +1,36 @@
+/**
+ * useGoogleDrive.ts
+ * Hook para interactuar con Google Drive API.
+ *
+ * Con Firebase Auth: el Access Token de Google viene del resultado del signInWithPopup.
+ * Lo recibe como prop desde el hook useAuth, eliminando la duplicación de flujo OAuth.
+ *
+ * Scopes requeridos (declarados en useAuth.ts):
+ * - drive.file: crear/editar archivos creados por la app
+ * - drive.readonly: leer cualquier archivo que el usuario comparta
+ */
 import { useState, useEffect, useCallback } from 'react';
 
-const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
 const API_KEY = import.meta.env.VITE_GOOGLE_API_KEY;
 
-const SCOPES = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly';
-
-export function useGoogleDrive() {
+export function useGoogleDrive(accessToken: string | null) {
   const [gapiInited, setGapiInited] = useState(false);
-  const [gisInited, setGisInited] = useState(false);
-  const [tokenClient, setTokenClient] = useState<any>(null);
-  const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [pickerInited, setPickerInited] = useState(false);
 
+  // Inicializar GAPI Client (para Picker API y Drive v3 REST)
   useEffect(() => {
     const loadGapiClient = async () => {
-      await new Promise<void>((resolve) => gapi.load('client:picker', () => resolve()));
-      await gapi.client.init({
-        apiKey: API_KEY,
-        discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'],
-      });
-      setGapiInited(true);
+      try {
+        await new Promise<void>((resolve) => gapi.load('client:picker', () => resolve()));
+        await gapi.client.init({
+          apiKey: API_KEY,
+          discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'],
+        });
+        setGapiInited(true);
+        setPickerInited(true);
+      } catch (e) {
+        console.error('[useGoogleDrive] Error al inicializar GAPI:', e);
+      }
     };
 
     if (window.gapi) {
@@ -26,53 +38,18 @@ export function useGoogleDrive() {
     }
   }, []);
 
-  useEffect(() => {
-    if (window.google?.accounts?.oauth2) {
-      const client = google.accounts.oauth2.initTokenClient({
-        client_id: CLIENT_ID,
-        scope: SCOPES,
-        callback: (response: any) => {
-          if (response.error !== undefined) {
-            console.error('Auth error:', response);
-            return;
-          }
-          setAccessToken(response.access_token);
-        },
-      });
-      setTokenClient(client);
-      setGisInited(true);
+  const openPicker = useCallback((
+    onFilePicked: (fileId: string, fileName: string, parentId: string) => void
+  ) => {
+    if (!accessToken) {
+      console.warn('[useGoogleDrive] Sin access token para Drive Picker');
+      return;
     }
-  }, []);
 
-  const handleAuthClick = useCallback(() => {
-    if (tokenClient) {
-      if (!accessToken) {
-        tokenClient.requestAccessToken({ prompt: 'consent' });
-      } else {
-        tokenClient.requestAccessToken({ prompt: '' });
-      }
-    }
-  }, [tokenClient, accessToken]);
-
-  const handleSignoutClick = useCallback(() => {
-    if (accessToken) {
-      google.accounts.oauth2.revoke(accessToken, () => {
-        setAccessToken(null);
-      });
-    }
-  }, [accessToken]);
-
-  const openPicker = useCallback((onFilePicked: (fileId: string, fileName: string, parentId: string) => void) => {
-    if (!accessToken) return;
-
-    // View for DWG/DXF files
-    const cadView = new google.picker.DocsView(google.picker.ViewId.DOCS);
-    // Google Drive doesn't have a specific MIME for DWG, so we show all files
     const allView = new google.picker.DocsView(google.picker.ViewId.DOCS);
 
     const picker = new google.picker.PickerBuilder()
-      .setAppId(import.meta.env.VITE_GOOGLE_PROJECT_ID || '461676360255')
-      .addView(cadView)
+      .setAppId(import.meta.env.VITE_GOOGLE_PROJECT_ID || '')
       .addView(allView)
       .setOAuthToken(accessToken)
       .setDeveloperKey(API_KEY)
@@ -93,7 +70,7 @@ export function useGoogleDrive() {
       const url = accessToken
         ? `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`
         : `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${API_KEY}`;
-      
+
       const headers: Record<string, string> = {};
       if (accessToken) {
         headers['Authorization'] = `Bearer ${accessToken}`;
@@ -101,11 +78,11 @@ export function useGoogleDrive() {
 
       const response = await fetch(url, { headers });
       if (!response.ok) {
-        throw new Error(`Failed to download file: ${response.statusText}`);
+        throw new Error(`Error al descargar archivo: ${response.status} ${response.statusText}`);
       }
       return await response.arrayBuffer();
     } catch (error) {
-      console.error('Error downloading file:', error);
+      console.error('[useGoogleDrive] Error descargando archivo:', error);
       return null;
     }
   }, [accessToken]);
@@ -117,7 +94,7 @@ export function useGoogleDrive() {
   ): Promise<boolean> => {
     if (!accessToken) return false;
     try {
-      const metadata: any = {
+      const metadata: Record<string, any> = {
         name: fileName,
         mimeType: 'application/dxf',
       };
@@ -126,37 +103,33 @@ export function useGoogleDrive() {
       }
 
       const form = new FormData();
-      form.append(
-        'metadata',
-        new Blob([JSON.stringify(metadata)], { type: 'application/json' })
-      );
+      form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
       form.append('file', new Blob([content], { type: 'application/dxf' }));
 
       const response = await fetch(
         'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
         {
           method: 'POST',
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
+          headers: { Authorization: `Bearer ${accessToken}` },
           body: form,
         }
       );
+
+      if (!response.ok) {
+        const errBody = await response.text();
+        console.error('[useGoogleDrive] Error subiendo archivo:', errBody);
+      }
       return response.ok;
     } catch (error) {
-      console.error('Error uploading file:', error);
+      console.error('[useGoogleDrive] Error en uploadDxf:', error);
       return false;
     }
   }, [accessToken]);
 
   return {
-    ready: gapiInited && gisInited,
-    authenticated: !!accessToken,
-    accessToken,
-    handleAuthClick,
-    handleSignoutClick,
+    ready: gapiInited && pickerInited,
     openPicker,
     downloadFile,
-    uploadDxf
+    uploadDxf,
   };
 }

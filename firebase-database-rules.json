@@ -1,0 +1,39 @@
+{
+  "rules": {
+    "rooms": {
+      "$roomId": {
+        // Solo usuarios autenticados con Firebase pueden leer/escribir
+        ".read": "auth != null",
+        ".write": "auth != null",
+
+        "presence": {
+          "$userId": {
+            // Cada usuario solo puede escribir su propia presencia
+            ".write": "auth != null && auth.uid === $userId",
+            ".read": "auth != null",
+            ".validate": "newData.hasChildren(['userId', 'displayName', 'color'])"
+          }
+        },
+
+        "cursors": {
+          "$userId": {
+            // Cada usuario solo puede actualizar su propio cursor
+            ".write": "auth != null && auth.uid === $userId",
+            ".read": "auth != null",
+            ".validate": "newData.hasChildren(['x', 'y'])"
+          }
+        },
+
+        "pins": {
+          "$pinId": {
+            // Cualquier usuario autenticado puede leer pins
+            ".read": "auth != null",
+            // Solo el autor puede eliminar su pin; cualquier autenticado puede crear
+            ".write": "auth != null",
+            ".validate": "newData.hasChildren(['id', 'type', 'worldX', 'worldY', 'author'])"
+          }
+        }
+      }
+    }
+  }
+}

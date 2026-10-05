@@ -1,9 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useGoogleDrive } from './useGoogleDrive';
+import { useAuth } from './useAuth';
+import { useRealtimeCollaboration } from './useRealtimeCollaboration';
 import { CadViewer } from './CadViewer';
 import type { CadViewerRef } from './CadViewer';
-import { RealtimeManager } from './realtime/RealtimeManager';
-import type { UserPresence, RealtimeMessage } from './realtime/types';
 import './App.css';
 
 export interface CadPin {
@@ -26,18 +26,15 @@ const BG_THEMES = [
 ];
 
 export default function App() {
-  const { 
-    ready, 
-    authenticated, 
-    handleAuthClick, 
-    handleSignoutClick, 
-    openPicker, 
-    downloadFile, 
-    uploadDxf 
-  } = useGoogleDrive();
+  // === AUTENTICACIÓN REAL CON GOOGLE ===
+  const { user, loading: authLoading, error: authError, isAuthenticated, signInWithGoogle, signOutUser } = useAuth();
 
-  const [userName, setUserName] = useState('');
-  const [isIdentified, setIsIdentified] = useState(false);
+  // El nombre del usuario viene de Google (verificado), no de un input libre
+  const userName = user?.displayName || '';
+
+  // === GOOGLE DRIVE (token viene del auth de Firebase) ===
+  const { ready, openPicker, downloadFile, uploadDxf } = useGoogleDrive(user?.accessToken ?? null);
+  const authenticated = isAuthenticated && !!user?.accessToken;
   
   const [currentFileId, setCurrentFileId] = useState<string | null>(null);
   const [currentFileName, setCurrentFileName] = useState<string | null>(null);
@@ -55,18 +52,58 @@ export default function App() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
 
-  // Multiusuario Realtime State
-  const [peers, setPeers] = useState<UserPresence[]>([]);
-  const [screenPeerCursors, setScreenPeerCursors] = useState<Array<{ user: UserPresence; screenX: number; screenY: number }>>([]);
-  const realtimeRef = useRef<RealtimeManager | null>(null);
-
-  // Ortho mode
-  const [isOrthoEnabled, setIsOrthoEnabled] = useState(false);
+  // Toast helper
+  const showToast = useCallback((msg: string) => {
+    setToastMsg(msg);
+    setTimeout(() => setToastMsg(null), 3500);
+  }, []);
 
   // WCS Anchored Pins (Photos + Comments)
   const [pins, setPins] = useState<CadPin[]>([]);
   const [showPins, setShowPins] = useState(true);
   const [screenPins, setScreenPins] = useState<Array<{ pin: CadPin; screenX: number; screenY: number; isVisible: boolean }>>([]);
+
+  // Save pins to localStorage
+  const savePinsToStorage = useCallback((updatedPins: CadPin[]) => {
+    if (!currentFileName) return;
+    const key = `cad_pins_${currentFileName}`;
+    localStorage.setItem(key, JSON.stringify(updatedPins));
+  }, [currentFileName]);
+
+  // === COLABORACIÓN EN TIEMPO REAL (Firebase Realtime Database — cross-device) ===
+  const {
+    peers,
+    peerCursors,
+    isConnected: realtimeConnected,
+    sendCursor: rtSendCursor,
+    broadcastPin: rtBroadcastPin,
+    broadcastDeletePin: rtBroadcastDeletePin,
+  } = useRealtimeCollaboration({
+    roomId: currentFileId || currentFileName,
+    currentUser: user,
+    onPinAdded: (newPin) => {
+      setPins(prev => {
+        if (prev.some(p => p.id === newPin.id)) return prev;
+        const updated = [...prev, newPin];
+        savePinsToStorage(updated);
+        return updated;
+      });
+    },
+    onPinDeleted: (pinId) => {
+      setPins(prev => {
+        const updated = prev.filter(p => p.id !== pinId);
+        savePinsToStorage(updated);
+        return updated;
+      });
+    },
+    onToast: showToast,
+  });
+
+  // Proyección de cursores de peers a coordenadas de pantalla
+  const [screenPeerCursors, setScreenPeerCursors] = useState<Array<{ user: { userId: string; displayName: string; color: string; photoURL: string | null }; screenX: number; screenY: number }>>([]);
+
+  // Ortho mode
+  const [isOrthoEnabled, setIsOrthoEnabled] = useState(false);
   
   // New Photo modal state
   const [pendingWorldCoord, setPendingWorldCoord] = useState<{ x: number; y: number } | null>(null);
@@ -89,59 +126,12 @@ export default function App() {
   const viewerContainerRef = useRef<HTMLDivElement>(null);
   const animFrameRef = useRef<number | null>(null);
 
-  // Initialize Realtime Collaboration Manager
+  // La colaboracion en tiempo real ahora se gestiona en useRealtimeCollaboration
+  // (Firebase Realtime Database) — el hook ya esta inicializado arriba
+
+
+  // Leer parametros de URL al montar (archivo compartido via link)
   useEffect(() => {
-    if (!isIdentified || !userName) return;
-
-    const roomId = currentFileId || currentFileName || 'default_room';
-    const rt = new RealtimeManager(roomId, userName);
-    realtimeRef.current = rt;
-
-    const unsubPresence = rt.onPresenceChange((activePeers) => {
-      setPeers(activePeers);
-    });
-
-    const unsubMessages = rt.onMessage((msg: RealtimeMessage) => {
-      if (msg.type === 'pin_add') {
-        const newPin = msg.payload?.pin as CadPin;
-        if (newPin) {
-          setPins(prev => {
-            if (prev.some(p => p.id === newPin.id)) return prev;
-            const updated = [...prev, newPin];
-            savePinsToStorage(updated);
-            return updated;
-          });
-          showToast(`👷 ${msg.sender.userName} agregó una ${newPin.type === 'photo' ? 'foto' : 'nota'} al plano.`);
-        }
-      } else if (msg.type === 'pin_delete') {
-        const pinId = msg.payload?.pinId;
-        if (pinId) {
-          setPins(prev => {
-            const updated = prev.filter(p => p.id !== pinId);
-            savePinsToStorage(updated);
-            return updated;
-          });
-        }
-      }
-    });
-
-    return () => {
-      unsubPresence();
-      unsubMessages();
-      rt.destroy();
-      realtimeRef.current = null;
-    };
-  }, [isIdentified, userName, currentFileId, currentFileName]);
-
-
-  // Check saved name and URL parameters on mount
-  useEffect(() => {
-    const savedName = localStorage.getItem('cadViewerUserName');
-    if (savedName) {
-      setUserName(savedName);
-      setIsIdentified(true);
-    }
-
     const params = new URLSearchParams(window.location.search);
     const sharedFileId = params.get('fileId');
     const sharedFileName = params.get('fileName') || 'Plano_Compartido.dwg';
@@ -169,72 +159,59 @@ export default function App() {
     }
   }, [currentFileName]);
 
-  // Save pins to localStorage
-  const savePinsToStorage = useCallback((updatedPins: CadPin[]) => {
-    if (!currentFileName) return;
-    const key = `cad_pins_${currentFileName}`;
-    localStorage.setItem(key, JSON.stringify(updatedPins));
-  }, [currentFileName]);
-
-  // Dynamic RAF loop to project CAD World Coordinates (WCS) to Screen Pixels (Pins + Peer Cursors)
+  // Dynamic RAF loop — only runs when there are pins or peer cursors to project
   useEffect(() => {
-    let active = true;
+    const hasPins = pins.length > 0;
+    const hasCursors = peers.length > 0;
+    if (!hasPins && !hasCursors) {
+      setScreenPins([]);
+      setScreenPeerCursors([]);
+      return;
+    }
 
+    let active = true;
     const updateScreenEntities = () => {
       if (!active) return;
-
       if (cadRef.current && viewerContainerRef.current) {
-        const containerRect = viewerContainerRef.current.getBoundingClientRect();
-        
+        const rect = viewerContainerRef.current.getBoundingClientRect();
+
         // 1. Project Pins
-        if (pins.length > 0) {
-          const projected = pins.map((p) => {
+        if (hasPins) {
+          setScreenPins(pins.map(p => {
             const pt = cadRef.current?.worldToScreen(p.worldX, p.worldY);
-            if (!pt) {
-              return { pin: p, screenX: -999, screenY: -999, isVisible: false };
-            }
-            const isInside = pt.x >= -30 && pt.x <= containerRect.width + 30 && pt.y >= -30 && pt.y <= containerRect.height + 30;
-            return {
-              pin: p,
-              screenX: pt.x,
-              screenY: pt.y,
-              isVisible: isInside
-            };
-          });
-          setScreenPins(projected);
+            if (!pt) return { pin: p, screenX: -999, screenY: -999, isVisible: false };
+            return { pin: p, screenX: pt.x, screenY: pt.y, isVisible: pt.x >= -30 && pt.x <= rect.width + 30 && pt.y >= -30 && pt.y <= rect.height + 30 };
+          }));
         } else {
           setScreenPins([]);
         }
 
-        // 2. Project Peer Cursors
-        if (peers.length > 0) {
-          const projectedCursors: Array<{ user: UserPresence; screenX: number; screenY: number }> = [];
+        // 2. Project Peer Cursors (from Firebase peerCursors Map)
+        if (hasCursors) {
+          const projected: Array<{ user: { userId: string; displayName: string; color: string; photoURL: string | null }; screenX: number; screenY: number }> = [];
           peers.forEach(peer => {
-            if (peer.cursor) {
-              const pt = cadRef.current?.worldToScreen(peer.cursor.worldX, peer.cursor.worldY);
-              if (pt && pt.x >= -20 && pt.x <= containerRect.width + 20 && pt.y >= -20 && pt.y <= containerRect.height + 20) {
-                projectedCursors.push({ user: peer, screenX: pt.x, screenY: pt.y });
+            const cursorPos = peerCursors.get(peer.userId);
+            if (cursorPos) {
+              const pt = cadRef.current?.worldToScreen(cursorPos.worldX, cursorPos.worldY);
+              if (pt && pt.x >= -20 && pt.x <= rect.width + 20 && pt.y >= -20 && pt.y <= rect.height + 20) {
+                projected.push({ user: peer, screenX: pt.x, screenY: pt.y });
               }
             }
           });
-          setScreenPeerCursors(projectedCursors);
+          setScreenPeerCursors(projected);
         } else {
           setScreenPeerCursors([]);
         }
       }
-
       animFrameRef.current = requestAnimationFrame(updateScreenEntities);
     };
 
     animFrameRef.current = requestAnimationFrame(updateScreenEntities);
-
     return () => {
       active = false;
-      if (animFrameRef.current) {
-        cancelAnimationFrame(animFrameRef.current);
-      }
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     };
-  }, [pins, peers]);
+  }, [pins, peers, peerCursors]);
 
 
   // Auto-download file if shared URL parameter is present
@@ -242,7 +219,7 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     const sharedFileId = params.get('fileId');
 
-    if (sharedFileId && isIdentified && !fileBuffer && !isLoading) {
+    if (sharedFileId && authenticated && !fileBuffer && !isLoading) {
       const loadSharedFile = async () => {
         setIsLoading(true);
         setLoadingMsg(`Cargando plano compartido (${currentFileName})...`);
@@ -257,20 +234,7 @@ export default function App() {
       };
       loadSharedFile();
     }
-  }, [isIdentified, downloadFile]);
-
-  const showToast = (msg: string) => {
-    setToastMsg(msg);
-    setTimeout(() => setToastMsg(null), 3500);
-  };
-
-  const handleIdentify = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (userName.trim()) {
-      setIsIdentified(true);
-      localStorage.setItem('cadViewerUserName', userName);
-    }
-  };
+  }, [authenticated, downloadFile, currentFileName, fileBuffer, isLoading, showToast]);
 
   const handlePickDriveFile = () => {
     setIsMobileMenuOpen(false);
@@ -620,13 +584,13 @@ export default function App() {
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!viewerContainerRef.current || !cadRef.current || !realtimeRef.current) return;
+    if (!viewerContainerRef.current || !cadRef.current) return;
     const rect = viewerContainerRef.current.getBoundingClientRect();
     const screenX = e.clientX - rect.left;
     const screenY = e.clientY - rect.top;
     const worldPt = cadRef.current.screenToWorld(screenX, screenY);
     if (worldPt) {
-      realtimeRef.current.sendCursor(worldPt.x, worldPt.y);
+      rtSendCursor(worldPt.x, worldPt.y); // Firebase Realtime Database
     }
   };
 
@@ -647,7 +611,7 @@ export default function App() {
     const updated = [...pins, newPin];
     setPins(updated);
     savePinsToStorage(updated);
-    realtimeRef.current?.broadcastPin(newPin);
+    rtBroadcastPin(newPin); // Firebase — cross-device
 
     setNewPhotoData(null);
     setPendingWorldCoord(null);
@@ -671,7 +635,7 @@ export default function App() {
     const updated = [...pins, newPin];
     setPins(updated);
     savePinsToStorage(updated);
-    realtimeRef.current?.broadcastPin(newPin);
+    rtBroadcastPin(newPin); // Firebase — cross-device
 
     setIsCommentModalOpen(false);
     setPendingWorldCoord(null);
@@ -683,7 +647,7 @@ export default function App() {
     const updated = pins.filter(p => p.id !== pinId);
     setPins(updated);
     savePinsToStorage(updated);
-    realtimeRef.current?.broadcastDeletePin(pinId);
+    rtBroadcastDeletePin(pinId); // Firebase — cross-device
     setSelectedPin(null);
     showToast('Marcador eliminado.');
   };
@@ -696,33 +660,58 @@ export default function App() {
   );
   const visibleLayersCount = rawLayers.filter(l => l.visible).length;
 
-  // Screen 1: Welcome / Identify Screen
-  if (!isIdentified) {
+  // Screen 0: Loading Firebase Auth state
+  if (authLoading) {
+    return (
+      <div className="welcome-screen">
+        <div className="welcome-card glass-panel" style={{ textAlign: 'center', gap: 16 }}>
+          <div className="spinner" style={{ margin: '0 auto' }}></div>
+          <p style={{ color: 'var(--text-muted)', marginTop: 12 }}>Verificando sesion...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Screen 1: Google Sign-In (identidad verificada por Google)
+  if (!isAuthenticated) {
     return (
       <div className="welcome-screen">
         <div className="welcome-card glass-panel">
-          <div className="app-logo-icon" style={{ width: 56, height: 56, margin: '0 auto 16px auto', fontSize: '1.4rem' }}>
+          <div className="app-logo-icon" style={{ width: 64, height: 64, margin: '0 auto 20px auto', fontSize: '1.6rem' }}>
             CAD
           </div>
           <h1>CAD Drive Obra</h1>
           <p className="subtitle">
-            {currentFileName 
-              ? `Te han compartido el plano "${currentFileName}". Identifícate con tu nombre para comenzar la revisión.` 
-              : 'Visor y marcado de planos en obra compatible con celulares y computadoras. Identifícate para registrar tus firmas y fotos.'}
+            {currentFileName
+              ? `Te compartieron el plano "${currentFileName}". Ingresa con tu cuenta de Google para comenzar la revision.`
+              : 'Visor y marcado de planos en obra. Compatible con celulares y computadoras.'}
           </p>
-          <form onSubmit={handleIdentify} className="welcome-form">
-            <input 
-              type="text" 
-              className="input-field"
-              placeholder="Tu Nombre / Rol (Ej: Arq. Alan - Obra 2)" 
-              value={userName}
-              onChange={(e) => setUserName(e.target.value)}
-              required
-            />
-            <button type="submit" className="btn btn-accent" style={{ padding: '14px', fontSize: '1rem' }}>
-              🚀 Ingresar al Visor
-            </button>
-          </form>
+
+          {authError && (
+            <div className="auth-error-banner">
+              {authError}
+            </div>
+          )}
+
+          <button
+            className="btn btn-google"
+            onClick={signInWithGoogle}
+            disabled={authLoading}
+            style={{ width: '100%', padding: '14px', fontSize: '1rem', marginTop: 8 }}
+          >
+            <svg width="20" height="20" viewBox="0 0 48 48" style={{ flexShrink: 0 }}>
+              <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+              <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+              <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+              <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+            </svg>
+            Continuar con Google
+          </button>
+
+          <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 12, lineHeight: 1.5 }}>
+            Tu nombre e email de Google se usaran para firmar revisiones y acotar fotos de obra.
+            No almacenamos contrasenas.
+          </p>
         </div>
       </div>
     );
@@ -794,36 +783,53 @@ export default function App() {
             )}
           </div>
 
-          {/* Live Multi-user Collaborators Avatars */}
+          {/* Live Multi-user Collaborators Avatars (Firebase — cross-device) */}
           {peers.length > 0 && (
             <div className="collaborators-group" title="Usuarios colaborando en este plano en tiempo real">
-              {peers.map((c) => (
-                <div 
-                  key={c.userId} 
-                  className="collaborator-avatar" 
-                  style={{ backgroundColor: c.color }}
-                  title={`${c.userName} (Revisor en línea)`}
-                >
-                  {c.userName.slice(0, 2).toUpperCase()}
-                </div>
+              {peers.map((peer) => (
+                peer.photoURL ? (
+                  <img
+                    key={peer.userId}
+                    src={peer.photoURL}
+                    className="collaborator-avatar collaborator-avatar-photo"
+                    style={{ border: `2px solid ${peer.color}` }}
+                    title={`${peer.displayName} (en linea)`}
+                    alt={peer.displayName}
+                  />
+                ) : (
+                  <div
+                    key={peer.userId}
+                    className="collaborator-avatar"
+                    style={{ backgroundColor: peer.color }}
+                    title={`${peer.displayName} (en linea)`}
+                  >
+                    {peer.displayName.slice(0, 2).toUpperCase()}
+                  </div>
+                )
               ))}
             </div>
           )}
 
-          <span className="user-badge" title={`Conectado como ${userName}`}>
-            <span className={`status-dot ${authenticated ? 'connected' : 'disconnected'}`}></span>
+          {/* User Identity (verified by Google OAuth) */}
+          <div className="user-badge" title={`Conectado como ${user?.email}`}>
+            {user?.photoURL ? (
+              <img src={user.photoURL} className="user-avatar-photo" alt={userName} referrerPolicy="no-referrer" />
+            ) : (
+              <span className={`status-dot ${realtimeConnected ? 'connected' : 'disconnected'}`}></span>
+            )}
             <span className="user-badge-name">{userName}</span>
-          </span>
+          </div>
 
           {/* Desktop Direct Actions */}
           <div className="desktop-actions">
-            {!authenticated ? (
-              <button className="btn btn-ghost btn-sm" onClick={handleAuthClick} disabled={!ready} title="Conectar Drive">
-                🔑 Drive
+            {/* Con Firebase Auth el mismo token OAuth sirve para Drive */}
+            {authenticated ? (
+              <button className="btn btn-ghost btn-sm" onClick={handlePickDriveFile} title="Abrir desde Google Drive" disabled={!ready}>
+                📂 Drive
               </button>
             ) : (
-              <button className="btn btn-ghost btn-sm" onClick={handlePickDriveFile} title="Abrir desde Google Drive">
-                📂 Drive
+              <button className="btn btn-ghost btn-sm" disabled title="Reconectando con Drive...">
+                🔄 Drive
               </button>
             )}
 
@@ -892,13 +898,13 @@ export default function App() {
                 💻 Abrir Archivo Local (.dwg / .dxf)
               </button>
               
-              {!authenticated ? (
-                <button className="drawer-item" onClick={() => { setIsMobileMenuOpen(false); handleAuthClick(); }}>
-                  🔑 Conectar Google Drive
-                </button>
-              ) : (
+              {authenticated ? (
                 <button className="drawer-item" onClick={handlePickDriveFile}>
                   📂 Abrir Plano desde Google Drive
+                </button>
+              ) : (
+                <button className="drawer-item" disabled style={{ opacity: 0.5 }}>
+                  🔄 Reconectando con Drive...
                 </button>
               )}
 
@@ -952,14 +958,13 @@ export default function App() {
                 </button>
               )}
 
-              {authenticated && (
-                <>
-                  <div className="drawer-divider"></div>
-                  <button className="drawer-item danger" onClick={() => { setIsMobileMenuOpen(false); handleSignoutClick(); }}>
-                    🚪 Desconectar Google Drive
-                  </button>
-                </>
-              )}
+              {/* Cerrar sesion (Firebase Sign Out) */}
+              <>
+                <div className="drawer-divider"></div>
+                <button className="drawer-item danger" onClick={() => { setIsMobileMenuOpen(false); signOutUser(); }}>
+                  🚪 Cerrar Sesion de Google
+                </button>
+              </>
             </div>
           </div>
         </div>
@@ -1054,7 +1059,7 @@ export default function App() {
                   <path d="M0 0l4.5 13.5 2.5-4.5 4.5-2.5L0 0z" stroke="#000" strokeWidth="1" />
                 </svg>
                 <span className="peer-cursor-label" style={{ backgroundColor: user.color }}>
-                  {user.userName}
+                  {user.displayName || 'Usuario'}
                 </span>
               </div>
             ))}
@@ -1092,13 +1097,13 @@ export default function App() {
               <button className="btn btn-accent" onClick={() => localFileInputRef.current?.click()}>
                 💻 Abrir Plano Local (DWG / DXF)
               </button>
-              {!authenticated ? (
-                <button className="btn btn-ghost" onClick={handleAuthClick} disabled={!ready}>
-                  🔑 Conectar Google Drive
+              {authenticated ? (
+                <button className="btn btn-ghost" onClick={handlePickDriveFile} disabled={!ready}>
+                  📂 Seleccionar de Google Drive
                 </button>
               ) : (
-                <button className="btn btn-ghost" onClick={handlePickDriveFile}>
-                  📂 Seleccionar de Google Drive
+                <button className="btn btn-ghost" disabled>
+                  🔄 Drive (reconectando...)
                 </button>
               )}
             </div>
