@@ -2,15 +2,40 @@ import { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 're
 import * as THREE from 'three';
 import {
   AcApDocManager,
-  AcEdOpenMode
+  AcEdOpenMode,
+  AcApSettingManager
 } from '@mlightcad/cad-simple-viewer';
 import {
   AcDbDatabaseConverterManager,
-  AcDbFileType
+  AcDbFileType,
+  AcDbAlignedDimension
 } from '@mlightcad/data-model';
 import { AcDbLibreDwgConverter } from '@mlightcad/libredwg-converter';
 import { generateCompliantDxf } from './dxfGenerator';
 import { setupSpanishI18n } from './spanishI18n';
+
+// Calibrate dimensions for architectural 1:100 scale: text height 0.12 and arrow scale 0.12
+try {
+  const originalCreateMText = (AcDbAlignedDimension.prototype as any).createMText;
+  if (originalCreateMText) {
+    (AcDbAlignedDimension.prototype as any).createMText = function (pos: any, rotation: any) {
+      const mtext = originalCreateMText.call(this, pos, rotation);
+      if (mtext) {
+        mtext.height = 0.12; // Standard 0.12 for 1:100 architectural drawing scale
+      }
+      return mtext;
+    };
+  }
+
+  const originalCreateArrow = (AcDbAlignedDimension.prototype as any).createArrow;
+  if (originalCreateArrow) {
+    (AcDbAlignedDimension.prototype as any).createArrow = function (pos: any, rotation: any, _scaleFactor: any) {
+      return originalCreateArrow.call(this, pos, rotation, 0.12);
+    };
+  }
+} catch (e) {
+  console.warn('Error calibrating AcDbAlignedDimension scale:', e);
+}
 
 export interface CadViewerRef {
   zoomExtents: () => void;
@@ -40,6 +65,7 @@ interface CadViewerProps {
   fileName: string | null;
   bgColor?: string;
   rotation?: number;
+  isRotateModeActive?: boolean;
   onLoaded?: () => void;
   onError?: (err: any) => void;
   onCameraUpdate?: () => void;
@@ -71,6 +97,7 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({
   fileName, 
   bgColor = '#111827', 
   rotation = 0,
+  isRotateModeActive = false,
   onLoaded, 
   onError,
   onRotationChange 
@@ -122,6 +149,13 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({
   useEffect(() => {
     ensureDwgConverter();
     setupSpanishI18n();
+    try {
+      if (AcApSettingManager?.instance) {
+        AcApSettingManager.instance.isShowCommandLine = false;
+      }
+    } catch (e) {
+      console.warn('Error setting isShowCommandLine:', e);
+    }
   }, []);
 
   // Suppress axes gizmo (UCS icon) at bottom left completely
@@ -190,6 +224,8 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({
         // Default in mlightcad is 5, which makes mobile pinch-zoom jump excessively!
         // 0.8 provides a smooth, tactile, and precise zoom experience on mobile touch screens
         controls.zoomSpeed = 0.8;
+        // Disable zoomToCursor so zooming does not jump / snap towards center of screen
+        controls.zoomToCursor = false;
       };
 
       if (view._layoutViewManager?._layoutViews) {
@@ -319,10 +355,21 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({
       const layoutDict = db?.objects?.layout;
       const names: string[] = [];
 
-      if (layoutDict && layoutDict.records) {
-        for (const record of layoutDict.records) {
-          if (record && record.layoutName) {
-            names.push(record.layoutName);
+      if (layoutDict) {
+        if (layoutDict._recordsByName && typeof layoutDict._recordsByName.forEach === 'function') {
+          layoutDict._recordsByName.forEach((layout: any, name: string) => {
+            const lName = layout?.layoutName || name;
+            if (lName && !names.includes(lName)) {
+              names.push(lName);
+            }
+          });
+        }
+        if (names.length === 0 && typeof layoutDict.newIterator === 'function') {
+          for (const item of layoutDict.newIterator()) {
+            const lName = item?.layoutName || item?.name;
+            if (lName && !names.includes(lName)) {
+              names.push(lName);
+            }
           }
         }
       }
@@ -352,6 +399,58 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({
       console.warn('Error updating canvas background color:', e);
     }
   }, [bgColor]);
+
+  // Two-finger touch rotation gesture: Active ONLY when isRotateModeActive is enabled!
+  const initialTouchAngleRef = useRef<number | null>(null);
+  const initialRotationRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (!isRotateModeActive) return;
+    const el = containerRef.current;
+    if (!el) return;
+
+    const getTouchAngle = (touches: TouchList) => {
+      const t1 = touches[0];
+      const t2 = touches[1];
+      return Math.atan2(t2.clientY - t1.clientY, t2.clientX - t1.clientX) * (180 / Math.PI);
+    };
+
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        initialTouchAngleRef.current = getTouchAngle(e.touches);
+        initialRotationRef.current = localRotation;
+      }
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (e.touches.length === 2 && initialTouchAngleRef.current !== null) {
+        const currentAngle = getTouchAngle(e.touches);
+        const delta = currentAngle - initialTouchAngleRef.current;
+        if (Math.abs(delta) > 1.5) {
+          const newRot = Math.round(((initialRotationRef.current + delta) % 360 + 360) % 360);
+          setLocalRotation(newRot);
+          applyRotationToCamera(newRot);
+          if (onRotationChange) onRotationChange(newRot);
+        }
+      }
+    };
+
+    const handleTouchEnd = (e: TouchEvent) => {
+      if (e.touches.length < 2) {
+        initialTouchAngleRef.current = null;
+      }
+    };
+
+    el.addEventListener('touchstart', handleTouchStart, { passive: true });
+    el.addEventListener('touchmove', handleTouchMove, { passive: true });
+    el.addEventListener('touchend', handleTouchEnd, { passive: true });
+
+    return () => {
+      el.removeEventListener('touchstart', handleTouchStart);
+      el.removeEventListener('touchmove', handleTouchMove);
+      el.removeEventListener('touchend', handleTouchEnd);
+    };
+  }, [isRotateModeActive, localRotation, onRotationChange]);
 
   useImperativeHandle(ref, () => ({
     zoomExtents: () => {
@@ -401,7 +500,8 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({
             docManagerRef.current.sendStringToExecute('pan');
             break;
           case 'zoom':
-            docManagerRef.current.sendStringToExecute('zoom');
+            // Starts interactive window zoom without snapping view to extents
+            docManagerRef.current.sendStringToExecute('zoom w');
             break;
           case 'select':
             docManagerRef.current.sendStringToExecute('select');
@@ -511,17 +611,30 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({
       if (!docManagerRef.current) return;
       try {
         setActiveLayout(layoutName);
+        const curDoc = docManagerRef.current.curDocument as any;
+        const db = curDoc?.database;
+        const view = (docManagerRef.current.curView || curDoc?.view) as any;
+        if (db?.objects?.layout && view) {
+          const layout = db.objects.layout.getAt(layoutName);
+          if (layout && layout.blockTableRecordId) {
+            db.currentSpaceId = layout.blockTableRecordId;
+            if (view._layoutViewManager) {
+              view.activeLayoutBtrId = layout.blockTableRecordId;
+            }
+          }
+        }
         docManagerRef.current.sendStringToExecute(`ctab ${layoutName}`);
         setTimeout(() => {
           suppressAxes();
           tuneCameraControls();
-        }, 100);
-        setTimeout(() => {
-          suppressAxes();
-          tuneCameraControls();
-        }, 400);
+          if (view && typeof view.zoomToFitDrawing === 'function') {
+            view.zoomToFitDrawing();
+          } else if (view && typeof view.zoomToSmartExtents === 'function') {
+            view.zoomToSmartExtents();
+          }
+        }, 300);
         if (localRotation !== 0) {
-          setTimeout(() => applyRotationToCamera(localRotation), 250);
+          setTimeout(() => applyRotationToCamera(localRotation), 350);
         }
       } catch (e) {
         console.error('Error switching layout:', e);
@@ -644,11 +757,29 @@ export const CadViewer = forwardRef<CadViewerRef, CadViewerProps>(({
               className={`layout-tab ${activeLayout === name ? 'active' : ''}`}
               onClick={() => {
                 setActiveLayout(name);
+                const curDoc = docManagerRef.current?.curDocument as any;
+                const db = curDoc?.database;
+                const view = (docManagerRef.current?.curView || curDoc?.view) as any;
+                if (db?.objects?.layout && view) {
+                  const layout = db.objects.layout.getAt(name);
+                  if (layout && layout.blockTableRecordId) {
+                    db.currentSpaceId = layout.blockTableRecordId;
+                    if (view._layoutViewManager) {
+                      view.activeLayoutBtrId = layout.blockTableRecordId;
+                    }
+                  }
+                }
                 docManagerRef.current?.sendStringToExecute(`ctab ${name}`);
-                setTimeout(suppressAxes, 200);
+                setTimeout(() => {
+                  suppressAxes();
+                  tuneCameraControls();
+                  if (view && typeof view.zoomToFitDrawing === 'function') {
+                    view.zoomToFitDrawing();
+                  }
+                }, 300);
               }}
             >
-              {name === 'Model' ? '📐 Model' : `📄 ${name}`}
+              {name.toLowerCase() === 'model' ? '📐 Modelo' : `📄 ${name}`}
             </button>
           ))}
         </div>

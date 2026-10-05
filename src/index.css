@@ -537,6 +537,109 @@ html, body {
   border: 2px solid #0f172a;
 }
 
+.compass-hud-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+}
+
+.canvas-hud-subbtn {
+  width: 32px;
+  height: 16px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #94a3b8;
+  font-size: 0.6rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  margin-top: -3px;
+  transition: all 0.2s ease;
+  z-index: 2;
+}
+
+.canvas-hud-subbtn:hover,
+.canvas-hud-subbtn.active {
+  background: rgba(56, 189, 248, 0.25);
+  border-color: #38bdf8;
+  color: #38bdf8;
+}
+
+.active-compass-follow {
+  border-color: #0284c7 !important;
+  box-shadow: 0 0 12px rgba(2, 132, 199, 0.5) !important;
+  color: #38bdf8 !important;
+  animation: pulse 2s infinite;
+}
+
+.rotation-hud-popover {
+  position: absolute;
+  top: 0;
+  right: 50px;
+  width: 220px;
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.95);
+  backdrop-filter: var(--glass-backdrop);
+  -webkit-backdrop-filter: var(--glass-backdrop);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.rotation-hud-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #e2e8f0;
+}
+
+.rotation-slider {
+  width: 100%;
+  accent-color: #38bdf8;
+  cursor: pointer;
+}
+
+.rotation-presets {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+}
+
+.btn-preset-deg {
+  padding: 4px 2px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: #94a3b8;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: center;
+}
+
+.btn-preset-deg:hover,
+.btn-preset-deg.active {
+  background: rgba(56, 189, 248, 0.2);
+  border-color: #38bdf8;
+  color: #38bdf8;
+}
+
+.rotation-actions-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 /* ===== OPERATOR STATION (Estás Aquí) ===== */
 .user-station-pin {
   position: absolute;
@@ -1169,13 +1272,19 @@ html, body {
 /* ===== LAYOUT TABS ===== */
 .layout-tabs {
   position: absolute;
-  bottom: 80px;
-  left: 16px;
+  bottom: max(74px, calc(68px + env(safe-area-inset-bottom, 0px)));
+  left: 14px;
   display: flex;
   gap: 6px;
-  z-index: 50;
-  max-width: 80vw;
+  z-index: 48;
+  max-width: calc(100vw - 28px);
   overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.layout-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .layout-tab {
@@ -2019,23 +2128,44 @@ html, body {
     width: 100%;
   }
 
-  /* Toolbar Dock on Mobile: thumb-friendly bottom bar */
+  /* Toolbar Dock on Mobile: thumb-friendly bottom bar with safe area */
   .toolbar-dock {
-    bottom: 12px;
+    bottom: max(14px, env(safe-area-inset-bottom, 14px));
     width: auto;
-    max-width: 96vw;
-    padding: 5px 8px;
+    max-width: calc(100vw - 20px);
+    padding: 4px 6px;
     gap: 3px;
     border-radius: 20px;
     background: rgba(15, 23, 42, 0.96);
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .toolbar-dock::-webkit-scrollbar {
+    display: none;
   }
 
   .toolbar-btn {
-    width: 44px;
-    height: 44px;
-    min-width: 42px;
-    min-height: 42px;
+    width: 38px;
+    height: 38px;
+    min-width: 38px;
+    min-height: 38px;
     border-radius: 10px;
+  }
+
+  /* Hide mlightcad native command line and session panels on mobile */
+  .ml-cli-container,
+  .ml-cli-wrapper,
+  .ml-cli-bar,
+  .ml-mobile-cmd,
+  .ml-mobile-cmd-panel {
+    display: none !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+    height: 0 !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
   }
 
   .desktop-only {

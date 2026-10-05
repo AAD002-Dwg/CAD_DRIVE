@@ -32,6 +32,7 @@ import {
   Palette,
   ClipboardList,
   RotateCcw,
+  RotateCw,
   FileCheck2,
   ExternalLink,
   Search,
@@ -78,8 +79,10 @@ export default function App() {
   
   const [isLoading, setIsLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState('');
-  const [activeTool, setActiveTool] = useState<'pan' | 'zoom' | 'select' | 'line' | 'circle' | 'mtext' | 'dimension' | 'revcloud' | 'photo' | 'comment' | 'situate'>('pan');
+  const [activeTool, setActiveTool] = useState<'pan' | 'zoom' | 'rotate' | 'select' | 'line' | 'circle' | 'mtext' | 'dimension' | 'revcloud' | 'photo' | 'comment' | 'situate'>('pan');
   const [rotationAngle, setRotationAngle] = useState(0);
+  const [isCompassFollowActive, setIsCompassFollowActive] = useState(false);
+  const [isRotationMenuOpen, setIsRotationMenuOpen] = useState(false);
   const [userStation, setUserStation] = useState<{ worldX: number; worldY: number; timestamp: string } | null>(null);
   const [screenUserStation, setScreenUserStation] = useState<{ screenX: number; screenY: number } | null>(null);
   const [deviceHeading, setDeviceHeading] = useState<number | null>(null);
@@ -116,6 +119,13 @@ export default function App() {
       window.removeEventListener('deviceorientation', handleOrientation, true);
     };
   }, []);
+
+  // Live compass follow effect: automatically aligns CAD blueprint with physical phone compass
+  useEffect(() => {
+    if (isCompassFollowActive && deviceHeading !== null) {
+      setRotationAngle(deviceHeading);
+    }
+  }, [isCompassFollowActive, deviceHeading]);
 
   // Toast helper
   const showToast = useCallback((msg: string) => {
@@ -542,7 +552,7 @@ export default function App() {
   };
 
   // Tool change & Revision Cloud with Layer metadata
-  const handleToolChange = (tool: 'pan' | 'zoom' | 'select' | 'line' | 'circle' | 'mtext' | 'dimension' | 'revcloud' | 'photo' | 'comment' | 'situate') => {
+  const handleToolChange = (tool: 'pan' | 'zoom' | 'rotate' | 'select' | 'line' | 'circle' | 'mtext' | 'dimension' | 'revcloud' | 'photo' | 'comment' | 'situate') => {
     setActiveTool(tool);
 
     if (tool === 'revcloud') {
@@ -558,9 +568,11 @@ export default function App() {
       showToast(`☁️ Capa activa: ${revLayerName}`);
     } else if (tool === 'situate') {
       showToast('📍 Modo SITUAR: Toque en el plano para definir su ubicación actual.');
+    } else if (tool === 'rotate') {
+      showToast('🔄 Modo Rotación: Usa 2 dedos sobre la pantalla para rotar libremente.');
     }
 
-    if (tool !== 'photo' && tool !== 'comment' && tool !== 'situate') {
+    if (tool !== 'photo' && tool !== 'comment' && tool !== 'situate' && tool !== 'rotate') {
       cadRef.current?.setTool(tool as any);
     }
   };
@@ -1302,8 +1314,9 @@ export default function App() {
                 {activeTool === 'comment' && <MessageSquare size={15} />}
                 {activeTool === 'situate' && <MapPin size={15} />}
                 {activeTool === 'zoom' && <ZoomIn size={15} />}
+                {activeTool === 'rotate' && <RotateCw size={15} />}
                 {activeTool === 'select' && <Crosshair size={15} />}
-                <span style={{ textTransform: 'capitalize' }}>{activeTool === 'situate' ? 'Situar' : activeTool}</span>
+                <span style={{ textTransform: 'capitalize' }}>{activeTool === 'situate' ? 'Situar' : activeTool === 'rotate' ? 'Rotar' : activeTool}</span>
               </span>
               <span className="active-tool-desc">
                 {activeTool === 'line' && 'Haz clic o arrastra para trazar marcas.'}
@@ -1314,7 +1327,8 @@ export default function App() {
                 {activeTool === 'photo' && 'Toca el punto del plano para anexar foto de obra.'}
                 {activeTool === 'comment' && 'Toca el punto del plano para insertar observación.'}
                 {activeTool === 'situate' && 'Toque en el plano donde se encuentra ubicado en la obra.'}
-                {activeTool === 'zoom' && 'Desliza o pellizca para acercar/alejar.'}
+                {activeTool === 'zoom' && 'Haz clic y arrastra un recuadro para hacer zoom.'}
+                {activeTool === 'rotate' && 'Gira el plano usando dos dedos en la pantalla o usa la brújula.'}
                 {activeTool === 'select' && 'Toca elementos para seleccionarlos.'}
               </span>
             </div>
@@ -1325,33 +1339,142 @@ export default function App() {
           </div>
         )}
 
+        {/* Live Device Compass Indicator Banner */}
+        {fileBuffer && isCompassFollowActive && (
+          <div className="active-tool-banner compass-live-banner">
+            <div className="active-tool-info">
+              <span className="active-tool-badge" style={{ background: '#0284c7' }}>
+                <Compass size={15} />
+                <span>Brújula en Vivo</span>
+              </span>
+              <span className="active-tool-desc">
+                {`Orientado a ${rotationAngle}° en tiempo real con el teléfono.`}
+              </span>
+            </div>
+            <button 
+              className="btn-cancel-tool" 
+              onClick={() => {
+                setIsCompassFollowActive(false);
+                showToast('🧭 Orientación en vivo desactivada');
+              }}
+            >
+              <X size={15} />
+              <span>Desactivar</span>
+            </button>
+          </div>
+        )}
+
         {/* Floating Canvas Controls HUD (Non-colliding) */}
         {fileBuffer && (
           <div className="canvas-hud">
-            {/* Rotation & Compass button */}
-            <button 
-              className="canvas-hud-btn compass-hud-btn" 
-              onClick={() => {
-                const next = (rotationAngle + 90) % 360;
-                setRotationAngle(next);
-                showToast(`🧭 Orientación: ${next}°`);
-              }}
-              title={`Rotar plano 90° (Actual: ${rotationAngle}°)`}
-            >
-              <Compass 
-                size={18} 
-                style={{ 
-                  transform: `rotate(${rotationAngle}deg)`, 
-                  transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)' 
-                }} 
-              />
-              <span className="hud-degree-label">{rotationAngle === 0 ? 'N' : `${rotationAngle}°`}</span>
-            </button>
+            {/* Rotation & Compass button container */}
+            <div className="compass-hud-wrapper" style={{ position: 'relative' }}>
+              <button 
+                className={`canvas-hud-btn compass-hud-btn ${isCompassFollowActive ? 'active-compass-follow' : ''}`} 
+                onClick={() => {
+                  if (isCompassFollowActive) setIsCompassFollowActive(false);
+                  const next = (rotationAngle + 90) % 360;
+                  setRotationAngle(next);
+                  showToast(`🧭 Orientación: ${next}°`);
+                }}
+                title={`Rotar plano 90° (Actual: ${rotationAngle}°)`}
+              >
+                <Compass 
+                  size={18} 
+                  style={{ 
+                    transform: `rotate(${rotationAngle}deg)`, 
+                    transition: isCompassFollowActive ? 'none' : 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)' 
+                  }} 
+                />
+                <span className="hud-degree-label">{rotationAngle === 0 ? 'N' : `${rotationAngle}°`}</span>
+              </button>
+
+              {/* Angle fine-tuning opener button */}
+              <button
+                className={`canvas-hud-subbtn ${isRotationMenuOpen ? 'active' : ''}`}
+                onClick={() => setIsRotationMenuOpen(!isRotationMenuOpen)}
+                title="Ajuste manual de ángulo y brújula"
+              >
+                {isRotationMenuOpen ? '▲' : '⚙'}
+              </button>
+
+              {/* Floating Rotation Adjustment Menu */}
+              {isRotationMenuOpen && (
+                <div className="rotation-hud-popover glass-panel">
+                  <div className="rotation-hud-header">
+                    <span>Orientación ({rotationAngle}°)</span>
+                    <button 
+                      className="btn-icon btn-ghost btn-xs" 
+                      onClick={() => setIsRotationMenuOpen(false)}
+                    >
+                      <X size={13} />
+                    </button>
+                  </div>
+
+                  <input 
+                    type="range" 
+                    min="0" 
+                    max="359" 
+                    value={rotationAngle} 
+                    onChange={(e) => {
+                      setIsCompassFollowActive(false);
+                      setRotationAngle(Number(e.target.value));
+                    }}
+                    className="rotation-slider"
+                  />
+
+                  <div className="rotation-presets">
+                    {[0, 90, 180, 270].map((deg) => (
+                      <button
+                        key={deg}
+                        className={`btn-preset-deg ${rotationAngle === deg ? 'active' : ''}`}
+                        onClick={() => {
+                          setIsCompassFollowActive(false);
+                          setRotationAngle(deg);
+                        }}
+                      >
+                        {deg === 0 ? '0° (N)' : `${deg}°`}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="rotation-actions-stack">
+                    <button
+                      className={`btn btn-xs ${activeTool === 'rotate' ? 'btn-accent' : 'btn-ghost'}`}
+                      onClick={() => {
+                        handleToolChange(activeTool === 'rotate' ? 'pan' : 'rotate');
+                        setIsRotationMenuOpen(false);
+                      }}
+                    >
+                      <RotateCw size={13} />
+                      <span>{activeTool === 'rotate' ? '✓ Gesto 2 Dedos Activo' : 'Gesto Rotación 2 Dedos'}</span>
+                    </button>
+
+                    <button
+                      className={`btn btn-xs ${isCompassFollowActive ? 'btn-primary' : 'btn-ghost'}`}
+                      onClick={() => {
+                        const next = !isCompassFollowActive;
+                        setIsCompassFollowActive(next);
+                        if (next) {
+                          showToast('🧭 Brújula en vivo: el plano rota con tu celular.');
+                        } else {
+                          showToast('🧭 Brújula desactivada.');
+                        }
+                      }}
+                    >
+                      <Compass size={13} />
+                      <span>{isCompassFollowActive ? '🟢 Siguiendo Celular' : 'Seguir Brújula del Celular'}</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
 
             {rotationAngle !== 0 && (
               <button 
                 className="canvas-hud-btn" 
                 onClick={() => {
+                  setIsCompassFollowActive(false);
                   setRotationAngle(0);
                   showToast('🧭 Orientación restablecida a 0°');
                 }}
@@ -1390,6 +1513,7 @@ export default function App() {
               fileName={currentFileName}
               bgColor={cadBgColor}
               rotation={rotationAngle}
+              isRotateModeActive={activeTool === 'rotate'}
               onRotationChange={(angle) => setRotationAngle(angle)}
               onLoaded={() => {
                 setIsLoading(false);
@@ -1632,11 +1756,19 @@ export default function App() {
                 <span className="toolbar-tooltip">Círculo</span>
               </button>
               <button 
+                className={`toolbar-btn ${activeTool === 'rotate' ? 'active' : ''}`} 
+                onClick={() => handleToolChange('rotate')}
+                title="Rotación interactiva del plano"
+              >
+                <RotateCw size={19} />
+                <span className="toolbar-tooltip">Rotar</span>
+              </button>
+              <button 
                 className={`toolbar-btn ${isOrthoEnabled ? 'active-ortho' : ''}`} 
                 onClick={handleToggleOrtho} 
                 title={`Modo Ortogonal (F8) [${isOrthoEnabled ? 'ON' : 'OFF'}]`}
               >
-                <Compass size={19} />
+                <Maximize2 size={19} />
                 <span className="toolbar-tooltip">Modo Ortogonal</span>
               </button>
             </div>
