@@ -33,7 +33,7 @@ export default function App() {
   const userName = user?.displayName || '';
 
   // === GOOGLE DRIVE (Google Identity Services con sync-cad-storage) ===
-  const { ready: driveReady, authenticated: driveAuthenticated, openPicker, downloadFile, uploadDxf } = useGoogleDrive(user?.email);
+  const { ready: driveReady, authenticated: driveAuthenticated, openPicker, connectDrive, downloadFile, uploadDxf } = useGoogleDrive(user?.email);
   const authenticated = driveAuthenticated;
   
   const [currentFileId, setCurrentFileId] = useState<string | null>(null);
@@ -215,7 +215,33 @@ export default function App() {
   }, [pins, peers, peerCursors]);
 
 
-  // Auto-download file if shared URL parameter is present
+  // Descargar plano compartido (manualmente o al autenticarse en Drive)
+  const handleLoadSharedFile = useCallback(async () => {
+    if (!currentFileId) return;
+
+    const doDownload = async () => {
+      setIsLoading(true);
+      setLoadingMsg(`Cargando plano compartido (${currentFileName || 'DWG'})...`);
+      const buffer = await downloadFile(currentFileId);
+      if (buffer) {
+        setFileBuffer(buffer);
+        showToast(`Plano ${currentFileName || ''} cargado exitosamente.`);
+      } else {
+        showToast('⚠️ Error 404: El plano no fue encontrado o es privado. El dueño del archivo debe configurarlo en Drive como "Cualquier persona que tenga el vínculo".');
+      }
+      setIsLoading(false);
+    };
+
+    if (!authenticated) {
+      connectDrive(() => {
+        doDownload();
+      });
+    } else {
+      doDownload();
+    }
+  }, [currentFileId, currentFileName, authenticated, downloadFile, connectDrive, showToast]);
+
+  // Auto-download file if shared URL parameter is present and already authenticated
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const sharedFileId = params.get('fileId');
@@ -224,22 +250,8 @@ export default function App() {
     if (attemptedFileIdRef.current === sharedFileId) return;
 
     attemptedFileIdRef.current = sharedFileId;
-
-    const loadSharedFile = async () => {
-      setIsLoading(true);
-      setLoadingMsg(`Cargando plano compartido (${currentFileName || 'DWG'})...`);
-      const buffer = await downloadFile(sharedFileId);
-      if (buffer) {
-        setFileBuffer(buffer);
-        showToast(`Plano cargado exitosamente.`);
-      } else {
-        showToast('No se pudo descargar el plano. Verifica permisos de acceso en Drive.');
-      }
-      setIsLoading(false);
-    };
-
-    loadSharedFile();
-  }, [authenticated, downloadFile, currentFileName, showToast]);
+    handleLoadSharedFile();
+  }, [authenticated, handleLoadSharedFile]);
 
   const handlePickDriveFile = () => {
     setIsMobileMenuOpen(false);
@@ -335,7 +347,7 @@ export default function App() {
     }
     const shareUrl = `${window.location.origin}${window.location.pathname}?fileId=${currentFileId}&fileName=${encodeURIComponent(currentFileName || 'Plano.dwg')}`;
     navigator.clipboard.writeText(shareUrl);
-    showToast('🔗 ¡Enlace de revisión copiado al portapapeles!');
+    showToast('🔗 ¡Enlace copiado! En Drive, asegurate de que el archivo tenga permiso "Cualquier persona con el vínculo".');
   };
 
   // Tool change & Revision Cloud with Layer metadata
@@ -1080,11 +1092,43 @@ export default function App() {
           </>
         ) : (
           <div className="empty-state">
-            <div className="empty-state-icon">📐</div>
-            <h2>Visor CAD de Obra</h2>
-            <p>
-              Abre planos DWG/DXF al instante, mide distancias, traza nubes de revisión, anexa fotos geolocalizadas y exporta tus marcas.
-            </p>
+            {currentFileId ? (
+              <div className="shared-plan-card" style={{
+                background: 'rgba(30, 41, 59, 0.7)',
+                border: '1px solid rgba(59, 130, 246, 0.4)',
+                borderRadius: '12px',
+                padding: '24px',
+                maxWidth: '460px',
+                margin: '0 auto 24px auto',
+                backdropFilter: 'blur(8px)',
+                textAlign: 'center'
+              }}>
+                <div style={{ fontSize: '2.5rem', marginBottom: '8px' }}>📂</div>
+                <h3 style={{ fontSize: '1.25rem', marginBottom: '8px', color: '#fff' }}>Plano Compartido</h3>
+                <p style={{ color: 'var(--accent)', fontWeight: 600, wordBreak: 'break-all', marginBottom: '12px' }}>
+                  {currentFileName || 'Plano de obra'}
+                </p>
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '20px', lineHeight: 1.5 }}>
+                  Te uniste a la sala colaborativa. Hacé clic abajo para cargar el archivo desde Google Drive.
+                </p>
+                <button 
+                  className="btn btn-accent" 
+                  onClick={handleLoadSharedFile}
+                  disabled={isLoading}
+                  style={{ width: '100%', justifyContent: 'center' }}
+                >
+                  📥 Cargar Plano desde Drive
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="empty-state-icon">📐</div>
+                <h2>Visor CAD de Obra</h2>
+                <p>
+                  Abre planos DWG/DXF al instante, mide distancias, traza nubes de revisión, anexa fotos geolocalizadas y exporta tus marcas.
+                </p>
+              </>
+            )}
             <div className="empty-state-actions">
               <button className="btn btn-accent" onClick={() => localFileInputRef.current?.click()}>
                 💻 Abrir Plano Local (DWG / DXF)

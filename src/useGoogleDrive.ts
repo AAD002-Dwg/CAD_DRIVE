@@ -147,7 +147,7 @@ export function useGoogleDrive(userEmail?: string | null) {
         return null;
       }
 
-      const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+      const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`;
       const response = await fetch(url, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
