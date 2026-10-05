@@ -65,6 +65,8 @@ export function useAuth() {
         setError('Inicio de sesión cancelado.');
       } else if (err.code === 'auth/popup-blocked') {
         setError('El popup fue bloqueado por el navegador. Permitir popups para este sitio.');
+      } else if (err.code === 'auth/unauthorized-domain') {
+        setError('Dominio o IP no autorizado en Firebase. Para probar desde el celular por IP (192.168.0.8), podés agregarla en Firebase Console > Authentication > Settings > Authorized domains, o bien ingresar directamente con el botón "Modo Obra Local" de abajo.');
       } else if (err.code === 'auth/network-request-failed') {
         setError('Error de red. Verificá tu conexión a internet.');
       } else {
@@ -76,12 +78,24 @@ export function useAuth() {
     }
   }, []);
 
+  const signInAsGuest = useCallback((name: string = 'Inspector Obra') => {
+    const guestUser: AuthUser = {
+      uid: 'guest-' + Math.random().toString(36).substring(2, 9),
+      displayName: name,
+      email: 'inspector.local@obra.cad',
+      photoURL: null
+    };
+    setUser(guestUser);
+    setError(null);
+  }, []);
+
   const signOutUser = useCallback(async () => {
     try {
       await signOut(auth);
     } catch (err) {
       console.error('[useAuth] Error al cerrar sesión:', err);
     }
+    setUser(null);
   }, []);
 
   return {
@@ -90,6 +104,7 @@ export function useAuth() {
     error,
     isAuthenticated: !!user,
     signInWithGoogle,
+    signInAsGuest,
     signOutUser,
   };
 }
